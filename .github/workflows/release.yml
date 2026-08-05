@@ -1,0 +1,83 @@
+# Builds FocusBar.exe and attaches it to a GitHub Release, so non-technical
+# users get one file to download and nothing to install.
+#
+# PyInstaller cannot cross-compile: the exe must be built on a Windows runner.
+# Every action used here is first-party (actions/*) or the preinstalled GitHub
+# CLI, so no third-party terms apply.
+
+name: Build and publish FocusBar.exe
+
+on:
+  release:
+    types: [published]
+  # Lets you dry-run the build from the Actions tab without cutting a release.
+  # The exe lands in the run's artifacts instead of on a release.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    permissions:
+      # Needed to attach the exe to the release. `contents: read` is not enough.
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # The Windows runner's CPython ships tkinter, which FocusBar needs.
+          python-version: "3.12"
+
+      - name: Install PyInstaller
+        run: python -m pip install --upgrade pyinstaller
+
+      - name: Build FocusBar.exe
+        # --onefile   one file for the user to download
+        # --windowed  no console window (the exe equivalent of .pyw/pythonw)
+        # Add --icon focusbar.ico once the repo has an icon; without one the
+        # exe ships with PyInstaller's generic icon.
+        run: pyinstaller --onefile --windowed --name FocusBar focusbar.pyw
+
+      - name: Write SHA256 checksum
+        run: |
+          $file = 'dist\FocusBar.exe'
+          $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLower()
+          "$hash  FocusBar.exe" | Set-Content "$file.sha256" -NoNewline
+          Write-Host "SHA256: $hash"
+
+      - name: Verify the exe launches
+        # The binary is a GUI app, so it never exits on its own. Start it, give
+        # it a few seconds to import tkinter and register hotkeys, and fail if
+        # it died — this catches a broken bundle before users download it.
+        run: |
+          $p = Start-Process dist\FocusBar.exe -PassThru
+          Start-Sleep -Seconds 10
+          if ($p.HasExited) {
+            throw "FocusBar.exe exited with code $($p.ExitCode) instead of staying up."
+          }
+          Stop-Process -Id $p.Id -Force
+          Write-Host 'Launched and stayed up.'
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FocusBar-exe
+          path: |
+            dist/FocusBar.exe
+            dist/FocusBar.exe.sha256
+          if-no-files-found: error
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" `
+            dist/FocusBar.exe `
+            dist/FocusBar.exe.sha256 `
+            --clobber

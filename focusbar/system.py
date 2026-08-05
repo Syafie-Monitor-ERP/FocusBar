@@ -50,16 +50,27 @@ def toggle_startup() -> bool:
             pass
         return False
 
-    pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-    if not os.path.exists(pythonw):
-        pythonw = sys.executable
+    if getattr(sys, "frozen", False):
+        # A packaged build points the shortcut at the .exe itself, with no
+        # arguments: ENTRY_SCRIPT then lives in a temp unpack directory that is
+        # gone by the next login.
+        exe = sys.executable
+        arguments = ""
+        cwd = os.path.dirname(sys.executable)
+    else:
+        exe = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        if not os.path.exists(exe):
+            exe = sys.executable
+        arguments = "$s.Arguments = '\"{}\"';".format(ENTRY_SCRIPT)
+        cwd = PROJECT_DIR
+
     script = (
         "$s = (New-Object -ComObject WScript.Shell).CreateShortcut('{link}');"
         "$s.TargetPath = '{exe}';"
-        "$s.Arguments = '\"{target}\"';"
+        "{arguments}"
         "$s.WorkingDirectory = '{cwd}';"
         "$s.Save()"
-    ).format(link=link, exe=pythonw, target=ENTRY_SCRIPT, cwd=PROJECT_DIR)
+    ).format(link=link, exe=exe, arguments=arguments, cwd=cwd)
     subprocess.run(
         ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output=True,

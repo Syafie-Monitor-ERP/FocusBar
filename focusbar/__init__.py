@@ -21,4 +21,4 @@ __version__ = "2.0"
 
 # Opened by the link icon in the task-list footer. Change this one line to
 # point it wherever you like; set it to "" to hide the icon entirely.
-GITHUB_URL = "https://example.com"
+GITHUB_URL = "https://github.com/Syafie-Monitor-ERP/FocusBar"
