@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# FocusBar runtime data lives in %APPDATA%\FocusBar, never in the repo -
+# but guard against a stray copy landing here.
+config.json
+sessions.csv
