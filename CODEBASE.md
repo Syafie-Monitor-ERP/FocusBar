@@ -11,25 +11,30 @@ parts will bite you.
 | File | Lines | What it is |
 | --- | ---: | --- |
 | `focusbar.pyw` | 30 | Entry point. Puts the project dir on `sys.path`, then `FocusBar().run()`. |
-| `focusbar/__init__.py` | 25 | Docstring module map, `__version__`, `GITHUB_URL`. |
+| `focusbar/__init__.py` | 37 | Docstring module map, `GITHUB_URL`, lazily-resolved `__version__`. |
 | `focusbar/paths.py` | 20 | Where data lives on disk. Resolved at import time. |
+| `focusbar/version.py` | 57 | The version number: build stamp if packaged, else `git describe`. |
 | `focusbar/util.py` | 21 | Pure formatters: `format_elapsed`, `truncate`, `lerp_color`. |
 | `focusbar/theme.py` | 73 | Palette, sizing, glyphs, `state_dot`, `breath_ramp`. |
 | `focusbar/tooltip.py` | 54 | Delayed hover hint in its own window. |
-| `focusbar/system.py` | 56 | Session-log opening, Startup shortcut. |
+| `focusbar/system.py` | 80 | Session-log opening, Startup shortcut (points at the .exe when packaged). |
 | `focusbar/winapi.py` | 121 | ctypes bindings, window-style helpers, `HotkeyListener`. |
 | `focusbar/row.py` | 160 | `BarRow` — one row of the strip. |
 | `focusbar/store.py` | 323 | Config, session log, and **`TaskStore`** — the timing model. |
 | `focusbar/panel.py` | 368 | `TaskListPanel` — the drop-down list. |
-| `focusbar/bar.py` | 645 | `FocusBar` — the window, layout, input and wiring. |
+| `focusbar/bar.py` | 668 | `FocusBar` — the window, layout, input and wiring. |
 | `tests/test_focusbar.py` | 560 | The whole suite. `python tests/test_focusbar.py`. |
+| `tools/make_version_file.py` | 91 | Generates the Windows VERSIONINFO resource PyInstaller embeds. |
 | `FocusBar.cmd` | | Launcher: `start pythonw focusbar.pyw`, no console. |
 | `install-startup.ps1` | | Creates/removes the Startup shortcut (`-Remove` to undo). |
+| `.github/workflows/release.yml` | | Tag → version-stamped `.exe` + generated release notes. |
+| `RELEASE.md` | | Standing preamble for release notes: download and first-run steps. |
 
-**No dependencies, no build step, no package metadata.** `compileall` over `focusbar/` is the
-whole "build". The `.pyw` extension is what makes `pythonw` run the entry point without a
-console — and `.pyw` is not an importable suffix, so the file and the `focusbar/` package can
-share a name without clashing.
+**No runtime dependencies and no build step to run the app** — `compileall` over `focusbar/`
+is the whole "build", and `python focusbar.pyw` needs nothing installed. Packaging for
+distribution is separate and lives entirely in CI (see §11). The `.pyw` extension is what
+makes `pythonw` run the entry point without a console — and `.pyw` is not an importable
+suffix, so the file and the `focusbar/` package can share a name without clashing.
 
 Runtime data lives outside the repo, in `%APPDATA%\FocusBar\`:
 
@@ -317,3 +322,57 @@ program.
   class of their own like `BarRow`. Worth extracting if that file grows.
 - **DPI**: sizes are in Tk pixels; on a mixed-DPI multi-monitor setup the strip may look
   slightly off after being dragged to a differently-scaled display.
+
+---
+
+## 11. Versioning and releases
+
+**A git tag is the only place a version number is authored.** Nothing in the repository
+records one, so cutting a release edits no files:
+
+```powershell
+git tag v0.0.2
+git push --tags
+```
+
+`.github/workflows/release.yml` does the rest on a Windows runner: stamps the version,
+builds a one-file `.exe`, generates the notes, and publishes the release.
+
+### Where the number comes from
+
+`version.resolve()` has two sources, tried in order:
+
+| Situation | Source | Example |
+| --- | --- | --- |
+| Packaged `.exe` | `version.STAMPED`, rewritten by CI from the tag | `0.0.2` |
+| Working checkout | `git describe --tags --always --dirty` | `0.0.2-4-gc3dfa40-dirty` |
+| Neither works | literal fallback | `dev`, or `unknown` if frozen |
+
+`STAMPED` is `""` in the repository **on purpose** — committing a number there would recreate
+the second source of truth the tag exists to remove. The stamping step fails the build if its
+regex no longer matches, so renaming that constant breaks CI loudly rather than silently
+shipping `unknown`.
+
+`__version__` is resolved through a module-level `__getattr__` rather than at import: off a
+checkout it costs a subprocess, which no importer should pay for unasked. It surfaces to users
+as a disabled entry above **Quit** in the right-click menu, and in the exe's
+Properties → Details (from the VERSIONINFO resource that `tools/make_version_file.py` writes).
+
+### The changelog
+
+Generated from `git log <previous tag>..<this tag>`, appended to `RELEASE.md`. No commit
+message convention is required — every non-merge commit is listed as written. On a first
+release `git describe` on the tag's parent fails, which is read as "log everything".
+
+### Gotchas
+
+- **A tag suffix means prerelease.** `v1.0.0-beta.1` is published with `--prerelease`, so
+  `/releases/latest` keeps pointing at the last stable build.
+- **Re-running a tag's workflow updates the existing release** rather than failing, so a
+  botched build can be fixed by re-running the job.
+- **`workflow_dispatch` is a dry run**: it builds and version-stamps identically but publishes
+  nothing, leaving the exe as a run artifact. Use it to test packaging changes.
+- **The build is unsigned**, so users get a SmartScreen warning. `RELEASE.md` tells them how
+  to get past it. Fixing it properly needs a code-signing certificate, not a CI change.
+- **The line counts in §1 drift.** Several were already stale before the release tooling
+  landed; treat them as rough.

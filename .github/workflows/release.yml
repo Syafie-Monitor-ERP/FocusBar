@@ -1,59 +1,107 @@
-# Builds FocusBar.exe and attaches it to a GitHub Release, so non-technical
-# users get one file to download and nothing to install.
+# Releasing FocusBar is two commands:
 #
-# PyInstaller cannot cross-compile: the exe must be built on a Windows runner.
-# Every action used here is first-party (actions/*) or the preinstalled GitHub
-# CLI, so no third-party terms apply.
+#     git tag v0.0.2
+#     git push --tags
+#
+# Everything below follows from that tag. The tag is the only place a version
+# number is authored — nothing in the repository needs editing to cut a release.
+#
+# PyInstaller cannot cross-compile, so the exe must be built on Windows. Every
+# action used here is first-party (actions/*) or the preinstalled GitHub CLI.
 
-name: Build and publish FocusBar.exe
+name: Release
 
 on:
-  release:
-    types: [published]
-  # Lets you dry-run the build from the Actions tab without cutting a release.
-  # The exe lands in the run's artifacts instead of on a release.
+  push:
+    tags:
+      - "v*"
+  # Dry run: builds and version-stamps exactly as a real release would, but
+  # publishes nothing. The exe lands in the run's artifacts instead.
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  build:
+  release:
     runs-on: windows-latest
 
     permissions:
-      # Needed to attach the exe to the release. `contents: read` is not enough.
+      # Needed to create the release and attach files to it.
       contents: write
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history and tags: the changelog is a diff between two tags.
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
           # The Windows runner's CPython ships tkinter, which FocusBar needs.
           python-version: "3.12"
 
+      - name: Work out the version
+        id: version
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $tag = $env:GITHUB_REF_NAME
+            $version = $tag -replace '^v', ''
+          } else {
+            # A dry run has no tag to read, so identify the commit instead.
+            $tag = ''
+            $version = "0.0.0-dev.$($env:GITHUB_SHA.Substring(0, 7))"
+          }
+          "tag=$tag" | Add-Content $env:GITHUB_OUTPUT
+          "version=$version" | Add-Content $env:GITHUB_OUTPUT
+          Write-Host "version: $version"
+
+      - name: Stamp the version into the package
+        # focusbar/version.py ships with STAMPED = "" so a checkout falls through
+        # to `git describe`. Filling it in here is what lets the packaged exe --
+        # which has neither git nor a repository -- report its own version.
+        run: |
+          $path = 'focusbar/version.py'
+          $version = '${{ steps.version.outputs.version }}'
+          $before = Get-Content $path -Raw
+          $after = $before -replace 'STAMPED = ""', "STAMPED = `"$version`""
+          if ($after -eq $before) {
+            throw "Could not find 'STAMPED = `"`"' in $path - has it been edited?"
+          }
+          Set-Content $path -Value $after -NoNewline
+          # Confirm the stamp actually took, rather than trusting the regex: a
+          # silent miss here ships an exe that reports its version as "unknown".
+          python -c "import focusbar.version as v; assert v.resolve() == '$version', v.resolve(); print('resolves to', v.resolve())"
+
       - name: Install PyInstaller
         run: python -m pip install --upgrade pyinstaller
+
+      - name: Generate the Windows version resource
+        run: python tools/make_version_file.py '${{ steps.version.outputs.version }}' build/version_info.txt
 
       - name: Build FocusBar.exe
         # --onefile   one file for the user to download
         # --windowed  no console window (the exe equivalent of .pyw/pythonw)
-        # Add --icon focusbar.ico once the repo has an icon; without one the
-        # exe ships with PyInstaller's generic icon.
-        run: pyinstaller --onefile --windowed --name FocusBar focusbar.pyw
-
-      - name: Write SHA256 checksum
+        # Add --icon focusbar.ico once the repo has an icon; without one the exe
+        # ships with PyInstaller's generic icon.
         run: |
-          $file = 'dist\FocusBar.exe'
-          $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLower()
-          "$hash  FocusBar.exe" | Set-Content "$file.sha256" -NoNewline
-          Write-Host "SHA256: $hash"
+          pyinstaller --onefile --windowed --name FocusBar `
+            --version-file build/version_info.txt `
+            focusbar.pyw
+
+      - name: Check the exe reports the right version
+        run: |
+          $expected = '${{ steps.version.outputs.version }}'
+          $actual = (Get-Item dist\FocusBar.exe).VersionInfo.FileVersionRaw
+          Write-Host "file properties report: $actual (expected $expected)"
+          if (-not $expected.StartsWith("$($actual.Major).$($actual.Minor).$($actual.Build)")) {
+            throw "Version resource says $actual but this build is $expected."
+          }
 
       - name: Verify the exe launches
-        # The binary is a GUI app, so it never exits on its own. Start it, give
-        # it a few seconds to import tkinter and register hotkeys, and fail if
-        # it died — this catches a broken bundle before users download it.
+        # The binary is a GUI app, so it never exits on its own. Start it, give it
+        # a few seconds to import tkinter and register hotkeys, and fail if it
+        # died -- this catches a broken bundle before users download it.
         run: |
           $p = Start-Process dist\FocusBar.exe -PassThru
           Start-Sleep -Seconds 10
@@ -63,21 +111,78 @@ jobs:
           Stop-Process -Id $p.Id -Force
           Write-Host 'Launched and stayed up.'
 
+      - name: Write SHA256 checksum
+        run: |
+          $file = 'dist\FocusBar.exe'
+          $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLower()
+          "$hash  FocusBar.exe" | Set-Content "$file.sha256" -NoNewline
+          Write-Host "SHA256: $hash"
+
+      - name: Assemble the release notes
+        if: github.ref_type == 'tag'
+        # RELEASE.md is the standing preamble (how to download and run it); the
+        # changelog is every commit since the previous tag. Neither is written by
+        # hand at release time.
+        run: |
+          $tag = '${{ steps.version.outputs.tag }}'
+
+          # `git describe` on the tag's parent finds the tag before this one. It
+          # fails on a first release, which just means "log everything".
+          $previous = git describe --tags --abbrev=0 "$tag^" 2>$null
+          if ($LASTEXITCODE -eq 0 -and $previous) {
+            $range = "$previous..$tag"
+            $heading = "## What changed since $previous"
+          } else {
+            $range = $tag
+            $heading = '## What changed'
+          }
+          Write-Host "changelog range: $range"
+
+          $changes = @(git log $range --no-merges --pretty=format:'- %s (%h)')
+          if (-not $changes) { $changes = @('- First release.') }
+
+          @(
+            (Get-Content RELEASE.md -Raw).TrimEnd()
+            ''
+            '---'
+            ''
+            $heading
+            ''
+            $changes
+          ) -join "`n" | Set-Content release-notes.md -Encoding utf8
+
+          Write-Host '--- notes ---'
+          Get-Content release-notes.md | Write-Host
+
+      - name: Publish the release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ steps.version.outputs.tag }}'
+          $version = '${{ steps.version.outputs.version }}'
+          $assets = @('dist/FocusBar.exe', 'dist/FocusBar.exe.sha256')
+
+          # A version with a suffix (v1.0.0-beta.1) is a prerelease, so it never
+          # becomes the download that /releases/latest points at.
+          $channel = if ($version -match '-') { '--prerelease' } else { '--latest' }
+
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            # Re-running a release: update it in place rather than failing.
+            gh release edit $tag --title "FocusBar $version" --notes-file release-notes.md $channel
+            gh release upload $tag @assets --clobber
+          } else {
+            gh release create $tag @assets --title "FocusBar $version" --notes-file release-notes.md $channel
+          }
+
       - name: Upload build artifact
+        # Always: on a dry run this is the only output, and on a real release it
+        # keeps a copy attached to the run that produced it.
         uses: actions/upload-artifact@v4
         with:
-          name: FocusBar-exe
+          name: FocusBar-${{ steps.version.outputs.version }}
           path: |
             dist/FocusBar.exe
             dist/FocusBar.exe.sha256
           if-no-files-found: error
-
-      - name: Attach to the release
-        if: github.event_name == 'release'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release upload "${{ github.event.release.tag_name }}" `
-            dist/FocusBar.exe `
-            dist/FocusBar.exe.sha256 `
-            --clobber

@@ -22,6 +22,7 @@ from .theme import (ACCENT, AMBER, BAR_HEIGHT, BG, BORDER, BREATH_MS, DOT_FONT,
                     PLACEHOLDER, ROW_HEIGHT, TEXT_LINK, TEXT_PAUSE, TEXT_PLAY,
                     breath_ramp)
 from .util import format_elapsed, truncate
+from .version import resolve as app_version
 from .winapi import (MOD_ALT, MOD_CONTROL, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
                      WS_EX_TRANSPARENT, HotkeyListener, bring_to_front, root_hwnd,
                      round_corners, set_ex_style, virtual_screen)
@@ -230,6 +231,7 @@ class FocusBar:
         self.menu.add_command(label="Start with Windows", command=toggle_startup)
         self.STARTUP_INDEX = self.menu.index("end")
         self.menu.add_separator()
+        self.menu.add_command(label=f"{APP_NAME} {app_version()}", state="disabled")
         self.menu.add_command(label="Quit", command=self.quit)
 
     def _start_hotkeys(self) -> None:
