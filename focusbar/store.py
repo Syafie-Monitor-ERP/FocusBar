@@ -11,9 +11,9 @@ from __future__ import annotations
 import csv
 import json
 import os
-import time
 from datetime import datetime
 
+from .clock import awake
 from .paths import CONFIG_PATH, DATA_DIR, LOG_PATH
 from .util import clean_id, initials, unique_id
 
@@ -153,7 +153,7 @@ class TaskStore:
             task.setdefault("_since", None)
             task.setdefault("_from", None)
             if task["running"]:
-                task["_since"] = time.monotonic()
+                task["_since"] = awake()
                 task["_from"] = datetime.now()
 
     # -- queries ------------------------------------------------------------
@@ -172,7 +172,7 @@ class TaskStore:
     def elapsed(task: dict) -> float:
         total = task["seconds"]
         if task["running"] and task.get("_since") is not None:
-            total += time.monotonic() - task["_since"]
+            total += awake() - task["_since"]
         return total
 
     def total_elapsed(self) -> float:
@@ -225,7 +225,7 @@ class TaskStore:
             return
         task["running"] = True
         task["auto"] = auto
-        task["_since"] = time.monotonic()
+        task["_since"] = awake()
         task["_from"] = datetime.now()
 
     def stop(self, task: dict) -> None:

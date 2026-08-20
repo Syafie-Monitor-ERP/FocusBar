@@ -258,3 +258,9 @@ generated, and if two end up sharing an id the later one is given a digit.
 
 Timers that were running at exit resume on the next launch. The closed period is never
 counted — every clock is banked to the log on quit.
+
+**Sleep doesn't count; a locked screen does.** Timers run on Windows' unbiased counter, so
+suspending or hibernating the machine stops every clock where it stood and resumes it on wake
+— leaving a task running overnight won't come back with eight hours against it. Locking your
+screen (or walking away) is *not* treated as a stop: the clock keeps ticking, because only you
+know whether you were still on the task.

@@ -7,10 +7,10 @@ in `store.TaskStore`; the methods here delegate to it and then redraw.
 from __future__ import annotations
 
 import queue
-import time
 import tkinter as tk
 import tkinter.font as tkfont
 
+from .clock import awake
 from .panel import TaskListPanel
 from .paths import APP_NAME
 from .row import BarRow
@@ -44,7 +44,7 @@ class FocusBar:
         self.click_through: bool = bool(self.config["click_through"])
 
         self.hidden = False
-        self.last_nudge = time.monotonic()
+        self.last_nudge = awake()
         self.editing = False
         self._drag_origin: tuple[int, int] | None = None
         self._drag_moved = False
@@ -102,7 +102,7 @@ class FocusBar:
 
     def set_running(self, index: int, running: bool) -> None:
         self.store.set_running(index, running)
-        self.last_nudge = time.monotonic()
+        self.last_nudge = awake()
         self._changed()
 
     def toggle_running(self, index: int) -> None:
@@ -142,12 +142,12 @@ class FocusBar:
 
     def set_active(self, index: int) -> None:
         self.store.set_active(index)
-        self.last_nudge = time.monotonic()
+        self.last_nudge = awake()
         self._changed()
 
     def cycle(self, delta: int) -> None:
         self.store.cycle(delta)
-        self.last_nudge = time.monotonic()
+        self.last_nudge = awake()
         self._changed()
 
     def remove_task(self, index: int) -> None:
@@ -585,7 +585,7 @@ class FocusBar:
 
     def set_nudge(self, minutes: int) -> None:
         self.nudge_minutes = minutes
-        self.last_nudge = time.monotonic()
+        self.last_nudge = awake()
         self.config["nudge_minutes"] = minutes
         self._persist()
 
@@ -671,9 +671,9 @@ class FocusBar:
             and self.running_tasks()      # any clock ticking is worth a nudge
             and not self.hidden
             and self._pulse_left == 0
-            and time.monotonic() - self.last_nudge >= self.nudge_minutes * 60
+            and awake() - self.last_nudge >= self.nudge_minutes * 60
         ):
-            self.last_nudge = time.monotonic()
+            self.last_nudge = awake()
             self._pulse_left = PULSE_FRAMES
             self._pulse()
 

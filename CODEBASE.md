@@ -14,6 +14,7 @@ parts will bite you.
 | `focusbar/__init__.py` | 37 | Docstring module map, `GITHUB_URL`, lazily-resolved `__version__`. |
 | `focusbar/paths.py` | 20 | Where data lives on disk. Resolved at import time. |
 | `focusbar/version.py` | 57 | The version number: build stamp if packaged, else `git describe`. |
+| `focusbar/clock.py` | 50 | `awake()` — the monotonic counter timers run on; excludes time the machine was asleep. |
 | `focusbar/util.py` | 68 | Pure helpers: `format_elapsed`, `truncate`, `lerp_color`, and the id rules `initials` / `clean_id` / `unique_id`. |
 | `focusbar/theme.py` | 78 | Palette, sizing, glyphs, `state_dot`, `breath_ramp`. |
 | `focusbar/tooltip.py` | 54 | Delayed hover hint in its own window. |
@@ -51,6 +52,7 @@ Runtime data lives outside the repo, in `%APPDATA%\FocusBar\`:
 focusbar.pyw
    └── bar.FocusBar ................ the window: layout, input, hotkeys, redraw
          ├── store.TaskStore ..... ALL rules about clocks and focus (no Tk)
+         │     └── clock.awake() . the counter every timer runs on (no Tk)
          ├── row.BarRow × n ...... one strip row each
          ├── panel.TaskListPanel . the drop-down list
          └── system / winapi ..... OS edges
@@ -67,7 +69,7 @@ Mutating methods on `FocusBar` follow one shape:
 ```python
 def set_active(self, index):
     self.store.set_active(index)     # model decides
-    self.last_nudge = time.monotonic()
+    self.last_nudge = awake()
     self._changed()                  # == self._refresh(); self._persist()
 ```
 
@@ -87,7 +89,7 @@ One task is a plain `dict` — no class, because it goes straight to JSON.
   "seconds":   float,  # banked total, NOT including the stretch currently running
   "running":   bool,
   "auto":      bool,   # started merely because focus landed here (see §4)
-  "_since":    float | None,    # time.monotonic() when the current stretch began
+  "_since":    float | None,    # clock.awake() when the current stretch began
   "_from":     datetime | None  # wall clock for the same, used for the CSV row
 }
 ```
@@ -97,6 +99,16 @@ task, so a new runtime field is excluded automatically as long as you prefix it.
 
 Elapsed time is always `seconds + (now - _since)`, via `TaskStore.elapsed(task)`. Nothing
 mutates `seconds` except `TaskStore.stop()`.
+
+**`now` is `clock.awake()`, never `time.monotonic()`.** On Windows `time.monotonic()` is
+*biased*: it keeps advancing while the machine is suspended, so a task left running overnight
+would come back with eight hours banked against it. `clock.awake()` reads
+`QueryUnbiasedInterruptTime`, which stops while the machine sleeps or hibernates and does not
+care about a locked screen - awake time is what "time on this task" means. It falls back to
+`time.monotonic()` off Windows, where suspend is already excluded. The nudge interval in
+`bar.py` runs on the same clock, so waking a machine never fires a nudge that "came due"
+during the suspend. Because the counter is unrelated to the wall clock, the CSV row still
+takes its start and end from `_from` / `datetime.now()`.
 
 > **Index-as-identity is the sharpest edge in this codebase.** `remove()` fixes up `active` by
 > hand, and any widget callback that captured an index is stale after a removal or a
@@ -341,7 +353,7 @@ or the entry is not yet mapped and the keys go nowhere.
 python tests/test_focusbar.py
 ```
 
-154 in-process checks, no pytest, no dependencies; exits non-zero on failure. It opens real
+269 in-process checks, no pytest, no dependencies; exits non-zero on failure. It opens real
 Tk windows briefly, so it needs a desktop session — it will not run headless.
 
 Two constraints shape the harness:

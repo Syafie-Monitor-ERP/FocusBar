@@ -44,6 +44,22 @@ def check(name, cond, detail=""):
         fails.append(name)
 
 
+# --- the clock ------------------------------------------------------------
+# Timers must not bank time the machine spent asleep, so they run on the
+# unbiased counter rather than time.monotonic() - see focusbar/clock.py.
+import time as _time                                            # noqa: E402
+
+from focusbar import bar as _bar, clock as _clock, store as _store   # noqa: E402
+
+check("clock: unbiased counter available on Windows",
+      (os.name != "nt") or not _clock.COUNTS_SLEEP)
+check("clock: never counts more than the biased clock",
+      _clock.awake() <= _time.monotonic() + 1.0)
+check("clock: advances", _clock.awake() > 0)
+check("clock: task clocks use it", _store.awake is _clock.awake)
+check("clock: the nudge timer uses it too", _bar.awake is _clock.awake)
+
+
 # --- pure helpers ---------------------------------------------------------
 check("elapsed <1h", nb.format_elapsed(14 * 60) == "14m")
 check("elapsed >1h", nb.format_elapsed(3 * 3600 + 7 * 60) == "3h07")

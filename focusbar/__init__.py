@@ -8,6 +8,7 @@ Module map (see CODEBASE.md for the full guide):
     version  the version number, from the build stamp or from git
     theme    palette, sizing, glyphs, the state->appearance mapping
     util     small pure formatters, plus the task-id generation rules
+    clock    the counter timers run on: awake time, sleep excluded
     winapi   ctypes bindings, window-style helpers, the global-hotkey thread
     store    config load/save, the session log, and TaskStore (clocks, ids, rank)
     tooltip  hover hint window
