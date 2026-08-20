@@ -672,9 +672,145 @@ check("id: id_locked persisted", "id_locked" in saved["tasks"][0])
 check("id: reload keeps ids", [t["id"] for t in nb.load_config()["tasks"]]
       == [t["id"] for t in bar.tasks])
 
-for _t in list(bar.tasks):
-    bar.store.stop(_t)
+# --- rank is position, and rearranging is the only way it changes -----------
+check("rank: one-based position", [bar.store.rank(i) for i in range(3)] == [1, 2, 3])
+
+names = lambda: [t["text"] for t in bar.tasks]                        # noqa: E731
+bar.set_active(0)
+before_ids = [t["id"] for t in bar.tasks]
+check("rank: move returns the new slot", bar.move_task(0, 2) == 2)
 bar.root.update()
+check("rank: the list reordered",
+      names() == ["Cut the release instead", "Refactor the export pipeline",
+                  "Refactor the export path"], str(names()))
+check("rank: focus followed the task itself",
+      bar.current["text"] == "Refactor the export path", bar.current["text"])
+check("rank: moving changes nothing but the order",
+      sorted(t["id"] for t in bar.tasks) == sorted(before_ids))
+check("rank: renumbered after the move", bar.store.rank(bar.active) == 3,
+      str(bar.store.rank(bar.active)))
+
+check("rank: shift up", bar.shift_task(2, -1) == 1)
+bar.root.update()
+check("rank: shift moved one slot", names()[1] == "Refactor the export path", str(names()))
+check("rank: shift does not wrap off the top", bar.shift_task(0, -1) == 0)
+check("rank: shift does not wrap off the bottom", bar.shift_task(2, 1) == 2)
+check("rank: order held at the ends",
+      names() == ["Cut the release instead", "Refactor the export path",
+                  "Refactor the export pipeline"], str(names()))
+check("rank: a move out of range is a no-op", bar.move_task(9, 0) == 9 and len(bar.tasks) == 3)
+
+# a clock must not notice being re-ranked
+bar.set_running(0, True)
+bar.tasks[0]["seconds"] = 400.0
+running_name = bar.tasks[0]["text"]
+bar.move_task(0, 2)
+bar.root.update()
+moved = next(t for t in bar.tasks if t["text"] == running_name)
+check("rank: the clock survives a move", moved["running"] and moved["seconds"] >= 400.0,
+      f"{moved['running']} {moved['seconds']}")
+bar.stop_all(); bar.root.update()
+
+# --- the list: ranks, ids, and the two ways to rearrange -------------------
+bar.set_active(0)
+bar.panel.open(); bar.root.update()
+ranks = [r.parts[0].cget("text").strip() for r in bar.panel.rows]
+check("panel: ranks count from 1", ranks == ["1", "2", "3"], str(ranks))
+check("panel: id shown per row",
+      [r.parts[2].cget("text").strip() for r in bar.panel.rows]
+      == [t["id"] for t in bar.tasks],
+      str([r.parts[2].cget("text") for r in bar.panel.rows]))
+
+bar.panel.cursor = 1
+bar.panel._highlight()
+mid_up, mid_down = bar.panel.rows[1].movers
+top_up, _ = bar.panel.rows[0].movers
+check("panel: arrows appear on the cursor row",
+      mid_up.cget("fg") == nb.DIM and mid_down.cget("fg") == nb.DIM,
+      f"{mid_up.cget('fg')} {mid_down.cget('fg')}")
+check("panel: arrows hidden on other rows",
+      top_up.cget("fg") == bar.panel.rows[0].cget("bg"), top_up.cget("fg"))
+bar.panel.cursor = 0
+bar.panel._highlight()
+check("panel: no up arrow at rank 1",
+      bar.panel.rows[0].movers[0].cget("fg") == bar.panel.rows[0].cget("bg"))
+check("panel: down arrow present at rank 1",
+      bar.panel.rows[0].movers[1].cget("fg") == nb.DIM)
+bar.panel.cursor = 2
+bar.panel._highlight()
+check("panel: no down arrow at the last rank",
+      bar.panel.rows[2].movers[1].cget("fg") == bar.panel.rows[2].cget("bg"))
+
+# Alt+Up / Alt+Down carry the cursor with the row they move
+bar.panel.cursor = 2
+top_before = names()[2]
+bar.panel._shift_cursor(-1)
+bar.root.update()
+check("panel: Alt+Up moves the row", names()[1] == top_before, str(names()))
+check("panel: the cursor rides along", bar.panel.cursor == 1, str(bar.panel.cursor))
+bar.panel._shift_cursor(1)
+bar.root.update()
+check("panel: Alt+Down puts it back", names()[2] == top_before, str(names()))
+
+# --- drag and drop ----------------------------------------------------------
+class Drag:  # stand-in for a tk event; the drag handlers only read y_root
+    def __init__(self, y_root):
+        self.y_root = y_root
+
+
+def row_mid(i):
+    row = bar.panel.rows[i]
+    return row.winfo_rooty() + row.winfo_height() // 2
+
+
+bar.root.update()
+first = names()[0]
+bar.panel._press(0, Drag(row_mid(0)))
+bar.panel._motion(Drag(row_mid(0) + 1))          # inside the slop: still a click
+check("drag: a nudge is not a drag", not bar.panel.drag["moved"])
+bar.panel._motion(Drag(row_mid(2) + 4))          # past the last row's midpoint
+bar.root.update()                                # place() lands on the idle queue
+check("drag: past the slop it drags", bar.panel.drag["moved"])
+check("drag: slot is the gap below the last row", bar.panel.drag["slot"] == 3,
+      str(bar.panel.drag["slot"]))
+check("drag: a drop line is shown", bar.panel.drop_line is not None
+      and bar.panel.drop_line.winfo_ismapped())
+bar.panel._release(0, Drag(row_mid(2) + 4))
+bar.root.update()
+check("drag: dropped at the bottom", names()[2] == first, str(names()))
+check("drag: cursor follows the drop", bar.panel.cursor == 2, str(bar.panel.cursor))
+check("drag: drop line put away", not bar.panel.drop_line.winfo_ismapped()
+      if bar.panel.drop_line else True)
+check("drag: state cleared", bar.panel.drag is None)
+check("drag: the list stays open", bar.panel.is_open)
+
+# Dropping into the gap directly below yourself is where the off-by-one lives:
+# it is the same gap you were already in, so it must mean "stay put".
+order = names()
+below_self = (row_mid(1) + row_mid(2)) // 2       # between the two midpoints
+bar.panel._press(1, Drag(row_mid(1)))
+bar.panel._motion(Drag(below_self))
+check("drag: the gap below self is slot index+1", bar.panel.drag["slot"] == 2,
+      str(bar.panel.drag["slot"]))
+bar.panel._release(1, Drag(below_self))
+bar.root.update()
+check("drag: dropping there changes nothing", names() == order, str(names()))
+
+# one gap further down is a real one-slot move
+bar.panel._press(1, Drag(row_mid(1)))
+bar.panel._motion(Drag(row_mid(2) + 4))
+bar.panel._release(1, Drag(row_mid(2) + 4))
+bar.root.update()
+check("drag: the next gap down moves it one slot",
+      names() == [order[0], order[2], order[1]], str(names()))
+
+# a press that never moves is still a click
+bar.panel.close(); bar.panel.open(); bar.root.update()
+bar.panel._press(1, Drag(row_mid(1)))
+bar.panel._release(1, Drag(row_mid(1)))
+bar.root.update()
+check("drag: a still press activates the row", not bar.panel.is_open and bar.active == 1,
+      str(bar.active))
 
 # --- editing an id in the list ---------------------------------------------
 bar.panel.open(); bar.root.update()
@@ -691,8 +827,8 @@ bar.root.update()
 check("id edit: commits", bar.tasks[0]["id"] == "MON-99", bar.tasks[0]["id"])
 check("id edit: leaves edit mode", bar.panel.editing_id == -1 and not bar.panel.typing)
 check("id edit: the row shows it",
-      bar.panel.rows[0].parts[1].cget("text").strip() == "MON-99",
-      bar.panel.rows[0].parts[1].cget("text"))
+      bar.panel.rows[0].parts[2].cget("text").strip() == "MON-99",
+      bar.panel.rows[0].parts[2].cget("text"))
 was = bar.tasks[0]["id"]
 bar.panel.begin_edit_id(0)
 bar.panel.id_var.set("scrapped")
@@ -770,6 +906,33 @@ bar.panel.cancel_add()
 bar.remove_task(len(bar.tasks) - 1)
 bar.panel.close()
 bar.root.update()
+
+# --- the menu's move entries track the ends of the list ---------------------
+bar._build_menu()
+
+
+def menu_state(index):
+    return str(bar.menu.entrycget(index, "state"))
+
+
+# _sync_menu, never _show_menu: tk_popup grabs the pointer and does not return.
+bar.set_active(0)
+bar._sync_menu()
+check("menu: Move up disabled at rank 1", menu_state(bar.MOVE_UP_INDEX) == "disabled",
+      menu_state(bar.MOVE_UP_INDEX))
+check("menu: Move down live at rank 1", menu_state(bar.MOVE_DOWN_INDEX) == "normal")
+check("menu: Move up says the rank",
+      "rank 1" in bar.menu.entrycget(bar.MOVE_UP_INDEX, "label"),
+      bar.menu.entrycget(bar.MOVE_UP_INDEX, "label"))
+bar.set_active(len(bar.tasks) - 1)
+bar._sync_menu()
+check("menu: Move down disabled at the last rank",
+      menu_state(bar.MOVE_DOWN_INDEX) == "disabled", menu_state(bar.MOVE_DOWN_INDEX))
+last = bar.current["text"]
+bar.shift_current(-1)
+bar.root.update()
+check("menu: Move up shifts the focused task", names()[len(bar.tasks) - 2] == last,
+      str(names()))
 
 # --- the footer link -------------------------------------------------------
 import focusbar                                   # noqa: E402

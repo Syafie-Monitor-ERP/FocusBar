@@ -12,14 +12,15 @@ doing right now — so when you drift, a glance at the top of the screen pulls y
 │ ●  RP4       Review PR 412 - customer import     5m          │
 └──────────────────────────────────────────────────────────────┘
     ↑ breathing blue dot = running; hover it to get ❚❚
-   ┌──────────────────────────────────────────┐
-   │ ● Fixing the OIDC token refresh    ✕ 25m │  ← running  (blue, row washed)
-   │ ● Nightly build on CI                40m │  ← running
-   │ ▶ Review PR 412 - customer import     5m │  ← paused   (amber play button)
-   │ ○ Update the API documentation         — │  ← never started
-   │ ─────────────────────────────────────    │
-   │ ＋  Add task                             │
-   └──────────────────────────────────────────┘
+   ┌────────────────────────────────────────────────────┐
+   │  1 ● FOT       Fixing the OIDC token refresh   25m │  ← running (blue, washed)
+   │  2 ● MON-4821  Nightly build on CI             40m │  ← running
+   │  3 ▶ RP4       Review PR 412 - customer  ▴▾✕    5m │  ← paused (amber play)
+   │  4 ○ UTA       Update the API documentation      — │  ← never started
+   │ ───────────────────────────────────────────────    │
+   │ ＋  Add task                                       │
+   └────────────────────────────────────────────────────┘
+      ↑ rank = priority; drag a row or press Alt+↑/↓ to re-rank
 ```
 
 Pure Python standard library (tkinter + ctypes). Nothing to install. The code is a small
@@ -65,7 +66,7 @@ Each row acts on **its own** task:
 | Click **n ▾** (first row) | Open the task list; hover to see what's paused and hidden |
 | Drag anywhere | Move it — the position is remembered |
 | Mouse wheel | Adjust opacity |
-| Right-click | Menu: add, list, next/previous, remove, stop all, opacity, nudge, click-through, log, startup, quit |
+| Right-click | Menu: add, list, next/previous, move up/down, remove, stop all, opacity, nudge, click-through, log, startup, quit |
 
 ## Task states
 
@@ -96,6 +97,8 @@ is never live.
 | In the list | Result |
 | --- | --- |
 | `↑` `↓` | Move the selection |
+| `Alt+↑` `Alt+↓` or click `▴` `▾` | Re-rank: move that task up or down the list |
+| Drag a row | Re-rank it anywhere — a blue line shows where it will land |
 | Click the id | Type your own (`Enter` saves, `Esc` cancels, empty restores the automatic one) |
 | `Enter` or click the text | Switch to that task |
 | `Space` or click the dot | Start / stop **just that** timer — runs alongside the rest |
@@ -139,6 +142,27 @@ Clearing the field hands the id back to the generator.
 Ids are padded so the task names line up in a column. On the strip that padding is measured
 across the rows actually showing, so one long id on a paused task can't indent everything.
 
+## Rank and priority
+
+**Position in the list is the priority** — rank 1 is the top task. There's no separate
+priority field to keep in sync: rearranging the list *is* re-prioritising, and the numbers
+down the left edge of the list renumber as you go.
+
+| To re-rank | |
+| --- | --- |
+| **Drag** a row in the list | A blue line shows the gap it will drop into |
+| `Alt+↑` / `Alt+↓` | Moves the selected row one place; the selection rides along with it |
+| Hover a row and click `▴` `▾` | The same, for the mouse — the arrows appear only on the row under the cursor |
+| Right-click the bar → **Move up / Move down** | Re-ranks the focused task without opening the list |
+
+Neither end wraps: `Alt+↑` on rank 1 does nothing, and the arrow that has nowhere to go isn't
+drawn at all. Re-ranking never touches anything else about a task — its clock keeps running,
+its id doesn't change, and the bar keeps showing whatever it was showing, because focus
+follows the *task*, not the slot it came from.
+
+The ranks live in the list rather than on the strip, because the strip only shows what's
+running — `1, 4, 7` down the side of it would be unreadable as a priority order. The strip
+does stack its rows in rank order.
 
 ## Several timers at once
 
@@ -225,9 +249,12 @@ editing temporarily re-enables the mouse, then restores click-through when you'r
 
 ## Settings
 
-`%APPDATA%\FocusBar\config.json` holds the task list with per-task totals and run state, which
-one is focused, plus position, opacity and nudge interval. It's written automatically; edit
-it by hand only while the app is closed.
+`%APPDATA%\FocusBar\config.json` holds the task list — in rank order, each with its id,
+per-task total and run state — which one is focused, plus position, opacity and nudge
+interval. It's written automatically; edit it by hand only while the app is closed.
+
+Hand-edited files are repaired on load rather than rejected: a task with no id gets one
+generated, and if two end up sharing an id the later one is given a digit.
 
 Timers that were running at exit resume on the next launch. The closed period is never
 counted — every clock is banked to the log on quit.

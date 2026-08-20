@@ -9,9 +9,9 @@ Module map (see CODEBASE.md for the full guide):
     theme    palette, sizing, glyphs, the state->appearance mapping
     util     small pure formatters, plus the task-id generation rules
     winapi   ctypes bindings, window-style helpers, the global-hotkey thread
-    store    config load/save, the session log, and TaskStore (the timing model)
+    store    config load/save, the session log, and TaskStore (clocks, ids, rank)
     tooltip  hover hint window
-    panel    TaskListPanel - the drop-down list
+    panel    TaskListPanel - the drop-down list, where rank and ids are edited
     bar      FocusBar - the strip itself
     system   session log + "start with Windows" shortcut
 

@@ -26,6 +26,7 @@ IDLE_DIM = "#525969"       # its dot and its em-dash
 ROW_TEXT = "#b9bfcd"       # unfocused row text in the list
 STACK_TEXT = "#99a0b0"     # unfocused row text on the strip
 ID_FG = "#8892ab"          # a task's short id - quieter than the name it labels
+RANK_FG = "#646b7d"        # the priority number in the list
 
 # The id and the rank are metadata, not state, so they get ONE colour each and
 # never join the running/paused/unstarted signalling (see section 6 of
@@ -34,6 +35,7 @@ ID_FG = "#8892ab"          # a task's short id - quieter than the name it labels
 # padded to the widest value currently on screen rather than to a constant - a
 # hand-typed "MON-4821" must not clip, and three-letter rows must still line up.
 ID_FONT = ("Consolas", 8)
+RANK_FONT = ("Consolas", 8)
 
 BAR_HEIGHT = 30            # one row; the strip grows a row per running task
 ROW_HEIGHT = 28            # height of each additional stacked row

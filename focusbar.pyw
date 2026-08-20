@@ -4,6 +4,7 @@ A thin, translucent, always-on-top strip showing what you're currently doing.
 One row per running task; paused tasks live in the drop-down list.
 
 Each task carries a short id, generated from its name and editable in the list.
+Its position in the list is its priority: drag a row, or press Alt+Up/Alt+Down.
 
 Hotkeys (work anywhere in Windows):
     Ctrl+Alt+T   rename the focused task
@@ -15,7 +16,7 @@ Hotkeys (work anywhere in Windows):
 
 On the strip, each row acts on its own task: hover its dot for the action,
 click the dot to start/stop, click the text to rename, drag to move, wheel for
-opacity, right-click for the menu.
+opacity, right-click for the menu (which includes Move up / Move down).
 
 The implementation lives in the `focusbar` package beside this file; see
 CODEBASE.md for a guide to it.

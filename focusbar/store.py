@@ -26,6 +26,7 @@ DEFAULTS = {
     # stop when focus leaves, while ones you started deliberately keep running.
     # "id" is the short label you refer to the task by; "id_locked" records that
     # you typed it, which is what stops a rename from overwriting your choice.
+    # Position in this list IS the priority: index 0 is rank 1.
     "tasks": [],          # [{"text", "id", "id_locked", "seconds", "running", "auto"}]
     "active": -1,         # which task the bar displays; independent of running
     "x": None,
@@ -136,6 +137,10 @@ class TaskStore:
       running  - per task; decides what the strip shows.
       active   - which single task the keyboard acts on ("focus").
 
+    A third, "rank", is not stored at all: it IS the position in `tasks`, so
+    reordering the list is the only way priority ever changes and the two can
+    never disagree. `move()` is the single place that reordering happens.
+
     Keys beginning with "_" are runtime-only and never persisted.
     """
 
@@ -179,6 +184,11 @@ class TaskStore:
     def ids(self, skip: int = -1) -> list[str]:
         """Every id in use, optionally ignoring one task's own."""
         return [t["id"] for i, t in enumerate(self.tasks) if i != skip]
+
+    @staticmethod
+    def rank(index: int) -> int:
+        """Rank is one-based position - the only definition of priority here."""
+        return index + 1
 
     def running_indices(self) -> list[int]:
         return [i for i, t in enumerate(self.tasks) if t["running"]]
@@ -311,6 +321,31 @@ class TaskStore:
     def cycle(self, delta: int) -> None:
         if len(self.tasks) >= 2:
             self.set_active((self.active + delta) % len(self.tasks))
+
+    def move(self, index: int, target: int) -> int:
+        """Reorder one task; returns the slot it ended up in.
+
+        Because rank is position, this is re-prioritising. Nothing about the
+        task itself changes - not its clock, not its id, not whether it runs.
+
+        Focus follows the task, not the slot it vacated: after dragging the
+        focused task down two places the bar still shows the same task. Identity
+        is checked with `is`, since the list is the only thing that moved.
+        """
+        if not (0 <= index < len(self.tasks)):
+            return index
+        target = max(0, min(target, len(self.tasks) - 1))
+        if target == index:
+            return index
+        focused = self.current
+        self.tasks.insert(target, self.tasks.pop(index))
+        if focused is not None:
+            self.active = next(i for i, t in enumerate(self.tasks) if t is focused)
+        return target
+
+    def shift(self, index: int, delta: int) -> int:
+        """One slot up or down. Deliberately does not wrap: rank 1 is the top."""
+        return self.move(index, index + delta)
 
     def remove(self, index: int) -> None:
         if not (0 <= index < len(self.tasks)):

@@ -1,7 +1,13 @@
 """The drop-down task list anchored under the strip.
 
-Rows are keyboard-navigable (Up/Down/Enter/Space/Delete) as well as clickable, so
-switching or starting a task never requires leaving the keyboard.
+Rows are keyboard-navigable (Up/Down/Enter/Space/Delete, Alt+Up/Alt+Down to
+re-rank) as well as clickable, so switching, starting or re-prioritising a task
+never requires leaving the keyboard.
+
+This is where rank lives. The strip shows only what is running, which would make
+the numbers there non-contiguous and therefore unreadable as priority; the list
+shows every task in order, so `1, 2, 3 ...` down the left edge means exactly what
+it looks like.
 """
 
 from __future__ import annotations
@@ -11,8 +17,8 @@ import tkinter as tk
 from . import GITHUB_URL
 from .system import open_url
 from .theme import (ACCENT, BORDER, DIM, FG, FLASH_BG, HOVER_BG, ID_FG, ID_FONT,
-                    IDLE_DIM, IDLE_FG, NUDGE, PANEL_BG, RAIL_WIDTH, ROW_TEXT,
-                    RUNNING_BG)
+                    IDLE_DIM, IDLE_FG, NUDGE, PANEL_BG, RAIL_WIDTH, RANK_FG,
+                    RANK_FONT, ROW_TEXT, RUNNING_BG)
 from .tooltip import Tooltip
 from .util import ID_MAX, format_elapsed, truncate
 from .winapi import (WS_EX_TOOLWINDOW, bring_to_front, root_hwnd, round_corners,
@@ -24,6 +30,7 @@ class TaskListPanel:
     FLASH_MS = 650
     ALPHA_BOOST = 0.18          # the list sits slightly more solid than the strip
     TEXT_LIMIT = 44             # the rank and id columns take the rest
+    DRAG_SLOP = 4               # px before a press becomes a drag, not a click
 
     def __init__(self, bar):
         self.bar = bar
@@ -34,6 +41,8 @@ class TaskListPanel:
         self.add_var: tk.StringVar | None = None
         self.editing_id = -1
         self.id_var: tk.StringVar | None = None
+        self.drag: dict | None = None
+        self.drop_line: tk.Frame | None = None
         self._had_focus = False
 
     @property
@@ -69,6 +78,7 @@ class TaskListPanel:
         self.cursor = max(0, self.store.active)
         self.adding = False
         self.editing_id = -1
+        self.drag = None
         self._had_focus = False
         self.add_var = tk.StringVar(master=self.bar.root, value="")
         self.id_var = tk.StringVar(master=self.bar.root, value="")
@@ -84,6 +94,9 @@ class TaskListPanel:
         self.window.bind("<Escape>", lambda _e: self.close())
         self.window.bind("<Up>", lambda _e: self._move_cursor(-1))
         self.window.bind("<Down>", lambda _e: self._move_cursor(1))
+        # Tk fires the most specific pattern, so these win over plain Up/Down.
+        self.window.bind("<Alt-Up>", lambda _e: self._shift_cursor(-1))
+        self.window.bind("<Alt-Down>", lambda _e: self._shift_cursor(1))
         self.window.bind("<Return>", lambda _e: self._activate_cursor())
         self.window.bind("<space>", lambda _e: self._toggle_cursor())
         self.window.bind("<Delete>", lambda _e: self._delete_cursor())
@@ -106,6 +119,8 @@ class TaskListPanel:
             self.rows = []
             self.adding = False
             self.editing_id = -1
+            self.drag = None
+            self.drop_line = None
 
     def _on_focus_in(self, _event: tk.Event) -> None:
         self._had_focus = True
@@ -141,6 +156,7 @@ class TaskListPanel:
         for child in self.body.winfo_children():
             child.destroy()
         self.rows = []
+        self.drop_line = None       # it was one of those children
 
         if not self.store.tasks:
             tk.Label(
@@ -196,6 +212,12 @@ class TaskListPanel:
         glyph, dot_fg, dot_font, time_text, time_fg, text_fg = self._row_style(task, focused)
         bg = self._row_bg(index, running)
 
+        # Rank first, because priority is what you scan the list for. One flat
+        # colour on every row: the number itself carries the ordering, and any
+        # colour ramp here would collide with the running/paused signalling.
+        rank = tk.Label(row, text=f"{self.store.rank(index):>2}", bg=bg, fg=RANK_FG,
+                        font=RANK_FONT, padx=7)
+        rank.pack(side="left")
         dot = tk.Label(row, text=glyph, bg=bg, fg=dot_fg, font=dot_font,
                        padx=9, pady=5, cursor="hand2")
         dot.pack(side="left")
@@ -206,6 +228,16 @@ class TaskListPanel:
         remove = tk.Label(row, text="✕", bg=bg, fg=bg, font=("Segoe UI", 8),
                           padx=8, cursor="hand2")
         remove.pack(side="right")
+        # The re-rank arrows sit inboard of the remove control and, like it, are
+        # invisible until the row is under the cursor - the hover-reveals-action
+        # rule. An arrow with nowhere to go is not drawn at all rather than drawn
+        # dead: see _highlight.
+        down = tk.Label(row, text="▾", bg=bg, fg=bg, font=("Segoe UI", 8),
+                        padx=3, cursor="hand2")
+        down.pack(side="right")
+        up = tk.Label(row, text="▴", bg=bg, fg=bg, font=("Segoe UI", 8),
+                      padx=3, cursor="hand2")
+        up.pack(side="right")
         text = tk.Label(row, text=truncate(task["text"], self.TEXT_LIMIT), bg=bg,
                         fg=text_fg, font=self.ROW_FONT, anchor="w")
         text.pack(side="left", fill="x", expand=True)
@@ -213,27 +245,40 @@ class TaskListPanel:
         focus_edge.configure(bg=ACCENT if focused else bg)
 
         # The id may be an Entry mid-edit; it keeps its own colours until it commits.
-        row.parts = tuple(w for w in (dot, id_widget, text, remove, time_label)
-                          if index != self.editing_id or w is not id_widget)
+        row.parts = tuple(w for w in (rank, dot, id_widget, text, up, down, remove,
+                                      time_label) if index != self.editing_id or w is not id_widget)
         row.time_label = time_label                  # type: ignore[attr-defined]
         row.dot = dot                                # type: ignore[attr-defined]
         row.remove = remove                          # type: ignore[attr-defined]
+        row.movers = (up, down)                      # type: ignore[attr-defined]
         row.index = index                            # type: ignore[attr-defined]
         row.running = running                        # type: ignore[attr-defined]
 
         def enter(_e=None):
+            if self.drag:                # a drag owns the highlight until it drops
+                return
             self.cursor = index
             self._highlight()
 
-        for widget in (row, text, time_label):
+        # Press/motion/release rather than <Button-1>: the same gesture has to be
+        # able to become a drag, and only a release that never moved is a click.
+        for widget in (row, rank, text, time_label):
             widget.bind("<Enter>", enter)
-            widget.bind("<Button-1>", lambda _e, i=index: self._activate(i))
+            widget.bind("<ButtonPress-1>", lambda e, i=index: self._press(i, e))
+            widget.bind("<B1-Motion>", self._motion)
+            widget.bind("<ButtonRelease-1>", lambda e, i=index: self._release(i, e))
         # The dot is its own control: it starts or stops just this task, leaving
         # focus and every other task alone. That is how several run at once.
         dot.tip = Tooltip(dot)                       # type: ignore[attr-defined]
         dot.bind("<Enter>", lambda _e, i=index: (enter(), dot.tip.show(self._dot_hint(i))))
         dot.bind("<Leave>", lambda _e: dot.tip.hide())
         dot.bind("<Button-1>", lambda _e, i=index: self._toggle_run(i))
+        for mover, delta, hint in ((up, -1, "Move up  ·  Alt+↑"),
+                                   (down, 1, "Move down  ·  Alt+↓")):
+            mover.tip = Tooltip(mover)               # type: ignore[attr-defined]
+            mover.bind("<Enter>", lambda _e, m=mover, h=hint: (enter(), m.tip.show(h)))
+            mover.bind("<Leave>", lambda _e, m=mover: m.tip.hide())
+            mover.bind("<Button-1>", lambda _e, i=index, d=delta: self._shift(i, d))
         remove.bind("<Enter>", lambda _e: (enter(), remove.configure(fg=NUDGE)))
         remove.bind("<Leave>", lambda _e: remove.configure(fg=DIM))
         remove.bind("<Button-1>", lambda _e, i=index: self._delete(i))
@@ -488,6 +533,13 @@ class TaskListPanel:
             if row.focus_edge is not None:               # type: ignore[attr-defined]
                 row.focus_edge.configure(bg=bg)          # type: ignore[attr-defined]
             row.remove.configure(fg=DIM if selected else bg)   # type: ignore[attr-defined]
+            # An arrow at the end of the list has nowhere to go, so it is painted
+            # out entirely - a control that is present but does nothing is worse
+            # than one that is absent.
+            up, down = row.movers                        # type: ignore[attr-defined]
+            up.configure(fg=DIM if selected and index > 0 else bg)
+            down.configure(
+                fg=DIM if selected and index < len(self.store.tasks) - 1 else bg)
 
     def _flash(self, index: int) -> None:
         """Briefly light up a freshly added row so the addition is visible."""
@@ -496,6 +548,10 @@ class TaskListPanel:
         row = self.rows[index]
         for widget in (row, *row.parts):                 # type: ignore[attr-defined]
             widget.configure(bg=FLASH_BG)
+        # The hover-only controls hide by matching the row, so they have to
+        # follow it into the flash or they would blink into view.
+        for widget in (row.remove, *row.movers):         # type: ignore[attr-defined]
+            widget.configure(fg=FLASH_BG)
         self.window.after(self.FLASH_MS, self._highlight)
 
     # -- actions ------------------------------------------------------------
@@ -521,6 +577,76 @@ class TaskListPanel:
     def _delete_cursor(self) -> None:
         if self.rows and not self.typing:
             self._delete(self.cursor)
+
+    # -- rearranging --------------------------------------------------------
+
+    def _shift(self, index: int, delta: int) -> None:
+        """Move one task a slot; the cursor rides along with it."""
+        self.cursor = self.bar.shift_task(index, delta)
+        self.refresh()
+
+    def _shift_cursor(self, delta: int) -> str:
+        if self.rows and not self.typing:
+            self._shift(self.cursor, delta)
+        return "break"
+
+    def _press(self, index: int, event: tk.Event) -> None:
+        self.drag = {"index": index, "y": event.y_root, "moved": False, "slot": index}
+
+    def _motion(self, event: tk.Event) -> None:
+        """Track the gap the row would drop into, without reordering anything yet.
+
+        Reordering live would mean rebuilding the rows mid-gesture, and the
+        widget that took the press owns the pointer until it is released - once
+        destroyed, the drag simply stops. So the list holds still and only a thin
+        insertion line moves.
+        """
+        drag = self.drag
+        if not drag or not self.window:
+            return
+        if not drag["moved"] and abs(event.y_root - drag["y"]) < self.DRAG_SLOP:
+            return
+        if not drag["moved"]:
+            drag["moved"] = True
+            self.cursor = drag["index"]         # the row reads as picked up
+            self._highlight()
+        drag["slot"] = self._slot_at(event.y_root)
+        self._show_drop_line(drag["slot"])
+
+    def _release(self, index: int, _event: tk.Event) -> None:
+        drag, self.drag = self.drag, None
+        self._hide_drop_line()
+        if not drag or not drag["moved"]:
+            self._activate(index)               # a press that never moved is a click
+            return
+        # The slot is a gap between rows. Removing the dragged row first shifts
+        # every gap below it up by one, so dropping into the gap just under
+        # yourself has to mean "stay put", not "move down one".
+        target = drag["slot"] - 1 if drag["slot"] > drag["index"] else drag["slot"]
+        self.cursor = self.bar.move_task(drag["index"], target)
+        self.refresh()
+
+    def _slot_at(self, y_root: int) -> int:
+        """Which gap the pointer is in: 0 above the first row, len below the last."""
+        return sum(1 for row in self.rows
+                   if y_root >= row.winfo_rooty() + row.winfo_height() / 2)
+
+    def _show_drop_line(self, slot: int) -> None:
+        if not self.window or not self.rows:
+            return
+        if self.drop_line is None:
+            self.drop_line = tk.Frame(self.body, bg=ACCENT, height=2)
+        if slot < len(self.rows):
+            y = self.rows[slot].winfo_y()
+        else:
+            last = self.rows[-1]
+            y = last.winfo_y() + last.winfo_height() - 2
+        self.drop_line.place(in_=self.body, x=0, y=y, relwidth=1.0, anchor="nw")
+        self.drop_line.lift()
+
+    def _hide_drop_line(self) -> None:
+        if self.drop_line is not None:
+            self.drop_line.place_forget()
 
     def _activate(self, index: int) -> None:
         self.close()

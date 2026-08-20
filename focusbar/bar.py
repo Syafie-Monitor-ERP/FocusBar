@@ -131,6 +131,15 @@ class FocusBar:
         self.store.set_id(index, task_id)
         self._changed()
 
+    def move_task(self, index: int, target: int) -> int:
+        """Re-prioritise: rank is position, so a move is the whole operation."""
+        target = self.store.move(index, target)
+        self._changed()
+        return target
+
+    def shift_task(self, index: int, delta: int) -> int:
+        return self.move_task(index, index + delta)
+
     def set_active(self, index: int) -> None:
         self.store.set_active(index)
         self.last_nudge = time.monotonic()
@@ -147,6 +156,10 @@ class FocusBar:
 
     def remove_current(self) -> None:
         self.remove_task(self.active)
+
+    def shift_current(self, delta: int) -> None:
+        if self.current:
+            self.shift_task(self.active, delta)
 
     # -- construction -------------------------------------------------------
 
@@ -219,6 +232,12 @@ class FocusBar:
         self.menu.add_separator()
         self.menu.add_command(label="Next task\tCtrl+Alt+N", command=lambda: self.cycle(1))
         self.menu.add_command(label="Previous task\tCtrl+Alt+B", command=lambda: self.cycle(-1))
+        # Reordering is priority. The list is where you see the ranks, so these
+        # are a convenience for the focused task, not the main way in.
+        self.menu.add_command(label="Move up", command=lambda: self.shift_current(-1))
+        self.MOVE_UP_INDEX = self.menu.index("end")
+        self.menu.add_command(label="Move down", command=lambda: self.shift_current(1))
+        self.MOVE_DOWN_INDEX = self.menu.index("end")
         self.menu.add_command(label="Remove current task", command=self.remove_current)
         self.menu.add_separator()
         self.menu.add_command(label="Pause\tCtrl+Alt+P", command=self.toggle_pause)
@@ -427,7 +446,13 @@ class FocusBar:
         plural = "task" if len(hidden) == 1 else "tasks"
         return f"{base}\n{len(hidden)} paused {plural}, not shown:\n{listed}{more}"
 
-    def _show_menu(self, event: tk.Event) -> None:
+    def _sync_menu(self) -> None:
+        """Bring the dynamic entries in line with current state.
+
+        Split out from `_show_menu` because `tk_popup` grabs the pointer and does
+        not return until the menu is dismissed, so these rules would otherwise be
+        unreachable from the test harness.
+        """
         running = len(self.running_tasks())
         self.menu.entryconfigure(
             self.PAUSE_INDEX,
@@ -436,12 +461,25 @@ class FocusBar:
             self.STOP_ALL_INDEX,
             label=f"Stop all timers ({running})" if running else "Stop all timers",
             state="normal" if running else "disabled")
+        # Rank is position, so the ends of the list have nowhere to go. Say so in
+        # the label rather than silently no-opping the click.
+        at_top = self.active <= 0
+        at_bottom = self.active < 0 or self.active >= len(self.tasks) - 1
+        self.menu.entryconfigure(
+            self.MOVE_UP_INDEX,
+            label="Move up" if self.current is None else f"Move up  (rank {self.store.rank(self.active)})",
+            state="disabled" if at_top else "normal")
+        self.menu.entryconfigure(
+            self.MOVE_DOWN_INDEX, state="disabled" if at_bottom else "normal")
         self.menu.entryconfigure(
             self.CLICK_THROUGH_INDEX,
             label=("✓ " if self.click_through else "") + "Click-through")
         self.menu.entryconfigure(
             self.STARTUP_INDEX,
             label=("✓ " if startup_enabled() else "") + "Start with Windows")
+
+    def _show_menu(self, event: tk.Event) -> None:
+        self._sync_menu()
         try:
             self.menu.tk_popup(event.x_root, event.y_root)
         finally:

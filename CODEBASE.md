@@ -20,10 +20,10 @@ parts will bite you.
 | `focusbar/system.py` | 80 | Session-log opening, Startup shortcut (points at the .exe when packaged). |
 | `focusbar/winapi.py` | 121 | ctypes bindings, window-style helpers, `HotkeyListener`. |
 | `focusbar/row.py` | 160 | `BarRow` — one row of the strip. |
-| `focusbar/store.py` | 323 | Config, session log, and **`TaskStore`** — the timing model. |
-| `focusbar/panel.py` | 368 | `TaskListPanel` — the drop-down list. |
-| `focusbar/bar.py` | 668 | `FocusBar` — the window, layout, input and wiring. |
-| `tests/test_focusbar.py` | 560 | The whole suite. `python tests/test_focusbar.py`. |
+| `focusbar/store.py` | 380 | Config, session log, and **`TaskStore`** — the timing, id and rank model. |
+| `focusbar/panel.py` | 629 | `TaskListPanel` — the drop-down list; also ranks, id editing and drag-to-reorder. |
+| `focusbar/bar.py` | 725 | `FocusBar` — the window, layout, input and wiring. |
+| `tests/test_focusbar.py` | 992 | The whole suite. `python tests/test_focusbar.py`. |
 | `tools/make_version_file.py` | 91 | Generates the Windows VERSIONINFO resource PyInstaller embeds. |
 | `FocusBar.cmd` | | Launcher: `start pythonw focusbar.pyw`, no console. |
 | `install-startup.ps1` | | Creates/removes the Startup shortcut (`-Remove` to undo). |
@@ -40,7 +40,7 @@ Runtime data lives outside the repo, in `%APPDATA%\FocusBar\`:
 
 | Path | Contents |
 | --- | --- |
-| `config.json` | Task list with per-task totals and run flags, focus, window position, opacity, nudge interval. |
+| `config.json` | Task list **in rank order**, each with id, per-task total and run flags; focus, window position, opacity, nudge interval. |
 | `sessions.csv` | Append-only log: `date,start,end,minutes,task`. |
 
 ---
@@ -125,6 +125,19 @@ means something unrelated (§4) — do not add a second field called `id_auto`.
 `initials()` and `unique_id()` are pure and live in `util.py`, so the generation rules can be
 tested without a store.
 
+### Rank is position
+
+There is **no rank field**. `TaskStore.rank(index)` returns `index + 1` and that is the entire
+definition, so priority and list order cannot drift apart. `move()` is the single mutation;
+`shift()` is `move()` by ±1 and deliberately does not wrap.
+
+`move()` re-points `active` by identity (`t is focused`), not by arithmetic on the old slot —
+focus belongs to a task, not to a position. Everything else about the task is untouched: the
+clock keeps running, `_since` is not reset, the id does not change.
+
+Adding a call site? Go through `FocusBar.move_task()` / `shift_task()`, which end in
+`_changed()` like every other mutation.
+
 ---
 
 ## 4. The two invariants that shape everything
@@ -197,6 +210,14 @@ needs invalidating.
 If you add a column that takes horizontal space, extend `bar._resize`'s width sum too — it
 adds `id_font.measure("0" * id_slot())` for this one.
 
+### `TaskListPanel` row
+
+`[focus edge] [rank] [dot] [id] task text .... [▴ ▾] [✕] [timer]`.
+
+`row.parts` is the tuple `_highlight()` and `_flash()` repaint, so **anything you add to a row
+must go into it** or it will keep the previous background. `row.remove` and `row.movers` are
+kept as separate references because those three hide by matching the row background rather
+than by being unpacked.
 
 ---
 
@@ -235,6 +256,16 @@ and `_highlight()`, so there is one definition per state.
 If you add a state, make it differ on **more than one** channel — a glyph swap alone is not
 legible at this size.
 
+### The id and the rank stay out of it
+
+Both are **metadata, not state**, and each gets exactly one colour (`ID_FG`, `RANK_FG`) on
+every row regardless of what the task is doing. Do not give rank a colour ramp: `ACCENT`
+already means running and `AMBER` already means paused, so a blue rank 1 reads as a ticking
+clock. The number and the position are the whole signal.
+
+The one exception is the id's own hover — it brightens to `FG` because it is clickable, which
+is the same hover-reveals-action rule the controls follow.
+
 ### Derive from live state, never from build-time state
 
 `FocusBar.action_icon(index)` and `FocusBar.button_hint(index)` both read the task's current
@@ -269,6 +300,11 @@ Each of these dictates a piece of the code. Don't "simplify" one away without te
 
 ### Two Tk constraints that shape the panel
 
+**A pressed widget owns the pointer until release.** This is why drag-to-reorder in
+`TaskListPanel` does *not* reorder as you drag: `refresh()` would destroy the very widget
+holding the implicit grab and the gesture would simply stop mid-drag. The list holds still and
+only `drop_line` — a `place`d 2px frame — moves; the single `move()` happens on release. If
+you ever make the rows reorder live, you have to move the bindings off the rows first.
 
 **A binding on a Toplevel fires for events in its children**, because the toplevel's name is
 in every descendant's bindtags. The panel binds bare `<Return>`, `<space>`, `<Delete>` and
@@ -339,6 +375,13 @@ Rules learned the hard way:
   `row.hover(True)`, `bar.panel._commit_add(start=False)`).
   `widget.event_generate("<Return>")` *is* allowed and is used to prove the `"break"` above —
   it is delivered to one named widget rather than to whatever the OS thinks is focused.
+- **Never call `_show_menu`.** `tk_popup` grabs the pointer and does not return until the menu
+  is dismissed, so a test that calls it hangs forever. The dynamic labels and states live in
+  `_sync_menu()`, which is what the checks call; `_show_menu` is that plus the popup.
+- **Flush the idle queue before asserting on geometry.** `place()` and `pack()` are deferred,
+  so `winfo_ismapped()` on the freshly-placed `drop_line` is False until `root.update()`.
+- **Mouse-gesture handlers take a stand-in event.** `_press`/`_motion`/`_release` read only
+  `y_root`, so a two-line class stands in; the row midpoints come from `winfo_rooty()`.
 - **Re-assert `panel.cursor` before each `_toggle_cursor()`.** The panel is a real window; a
   pointer resting over a row fires its `<Enter>` and moves the cursor, making tests flaky.
 - **Watch for leftover panel state.** Clicking a row button with no tasks opens the add flow,
@@ -378,6 +421,12 @@ that ends in `_changed()`. Resist the urge to put timing logic in the view.
 **Add a column to a list row** — build it in `_build_row`, add it to `row.parts` (else
 `_highlight` leaves it on the old background), and pad its text via a `_slot()` helper rather
 than setting `width=`. If it takes horizontal space on the *strip* too, extend `bar._resize`.
+
+**Add a hover-only control** — pack it right of the text, give it `fg=bg` at rest, and paint
+it in `_highlight` only when the row is selected. Paint it out entirely rather than greying it
+when it would do nothing (as the `▴` on rank 1 does), and add it to the `_flash` fg loop so it
+does not blink into view on a newly added row.
+
 **Change the footer link** — `GITHUB_URL` in `focusbar/__init__.py`; `""` hides the icon.
 `system.open_url()` accepts `http`/`https` only, so a mistyped value cannot launch a local
 program.
@@ -389,11 +438,14 @@ program.
 - **Single instance is not enforced.** Two copies fight over `config.json` (last write wins)
   and both try to register the same hotkeys; the second silently fails
   (`HotkeyListener.failed` records which, but nothing surfaces it).
-- **`MAX_TASKS` (40) trims from the front** and stops those timers first — silently.
+- **`MAX_TASKS` (40) trims from the front** and stops those timers first — silently. Since
+  rank is position, that means it drops the *highest-priority* tasks.
 - **Ids are not in the session log.** `sessions.csv` still records the task text only, so a
   renamed task is two different labels in the log even though it kept its id.
 - **`unique_id` gives up after 999 collisions** and returns the base, which would allow a
   duplicate. Reaching it needs 999 tasks sharing one id and `MAX_TASKS` is 40.
+- **Drag-to-reorder has no auto-scroll**, because the panel never scrolls — with 40 tasks the
+  list is simply taller than it is comfortable to drag across. Alt+↑/↓ has no such limit.
 - **No timezone/DST handling** in the CSV — wall-clock strings only.
 - **Log stretches under 30 s are dropped** (`MIN_LOGGED_SECONDS`), so rapid hopping
   under-reports.
