@@ -15,6 +15,7 @@ import time
 from datetime import datetime
 
 from .paths import CONFIG_PATH, DATA_DIR, LOG_PATH
+from .util import clean_id, initials, unique_id
 
 MAX_TASKS = 40
 MIN_LOGGED_SECONDS = 30      # shorter stretches are typos, not work
@@ -23,7 +24,9 @@ DEFAULTS = {
     # Each task carries its own clock, so any number of them can run at once.
     # "auto" marks a task that started merely because focus landed on it - those
     # stop when focus leaves, while ones you started deliberately keep running.
-    "tasks": [],          # [{"text": str, "seconds": float, "running": bool, "auto": bool}]
+    # "id" is the short label you refer to the task by; "id_locked" records that
+    # you typed it, which is what stops a rename from overwriting your choice.
+    "tasks": [],          # [{"text", "id", "id_locked", "seconds", "running", "auto"}]
     "active": -1,         # which task the bar displays; independent of running
     "x": None,
     "y": None,
@@ -54,6 +57,8 @@ def load_config() -> dict:
     config["tasks"] = [
         {
             "text": str(t.get("text", "")).strip(),
+            "id": clean_id(t.get("id", "")),
+            "id_locked": bool(t.get("id_locked", False)),
             "seconds": float(t.get("seconds", 0) or 0),
             "running": bool(t.get("running", False)),
             "auto": bool(t.get("auto", False)),
@@ -61,6 +66,13 @@ def load_config() -> dict:
         for t in config.get("tasks", [])
         if isinstance(t, dict) and str(t.get("text", "")).strip()
     ][:MAX_TASKS]
+    # Tasks written before ids existed have none; a hand-edited file may repeat
+    # one. Both are settled here so the rest of the code can assume ids are
+    # present and distinct.
+    assigned: list[str] = []
+    for task in config["tasks"]:
+        task["id"] = unique_id(task["id"] or initials(task["text"]), assigned)
+        assigned.append(task["id"])
     active = int(config.get("active", -1))
     config["active"] = active if 0 <= active < len(config["tasks"]) else (0 if config["tasks"] else -1)
     return config
@@ -111,7 +123,8 @@ def append_log(task: str, started: datetime, ended: datetime, seconds: float) ->
 
 
 def new_task(text: str) -> dict:
-    return {"text": text, "seconds": 0.0, "running": False, "auto": False,
+    return {"text": text, "id": initials(text), "id_locked": False,
+            "seconds": 0.0, "running": False, "auto": False,
             "_since": None, "_from": None}
 
 
@@ -162,6 +175,10 @@ class TaskStore:
 
     def running_tasks(self) -> list[dict]:
         return [t for t in self.tasks if t["running"]]
+
+    def ids(self, skip: int = -1) -> list[str]:
+        """Every id in use, optionally ignoring one task's own."""
+        return [t["id"] for i, t in enumerate(self.tasks) if i != skip]
 
     def running_indices(self) -> list[int]:
         return [i for i, t in enumerate(self.tasks) if t["running"]]
@@ -240,6 +257,7 @@ class TaskStore:
         if activate is None:
             activate = self.current is None
         task = new_task(text)
+        task["id"] = unique_id(task["id"], self.ids())
         self.tasks.append(task)
         while len(self.tasks) > MAX_TASKS:
             self.stop(self.tasks[0])
@@ -259,8 +277,21 @@ class TaskStore:
         was_running, was_auto = task["running"], task["auto"]
         self.stop(task)
         task["text"] = text
+        # A generated id is a view of the name, so it follows the name. One you
+        # typed is a reference you may have written down elsewhere; that stays.
+        if not task["id_locked"]:
+            task["id"] = unique_id(initials(text), self.ids(skip=index))
         if was_running:
             self.start(task, auto=was_auto)
+
+    def set_id(self, index: int, task_id: str) -> None:
+        """Set a task's id by hand. Blank hands it back to the generator."""
+        if not (0 <= index < len(self.tasks)):
+            return
+        task = self.tasks[index]
+        typed = clean_id(task_id)
+        task["id_locked"] = bool(typed)
+        task["id"] = unique_id(typed or initials(task["text"]), self.ids(skip=index))
 
     def set_active(self, index: int) -> None:
         """Move focus to a task and start it.
@@ -297,7 +328,8 @@ class TaskStore:
         """The JSON-safe shape. Runtime "_" keys are dropped here."""
         return {
             "tasks": [
-                {"text": t["text"], "seconds": round(t["seconds"], 1),
+                {"text": t["text"], "id": t["id"], "id_locked": t["id_locked"],
+                 "seconds": round(t["seconds"], 1),
                  "running": t["running"], "auto": t["auto"]}
                 for t in self.tasks
             ],

@@ -49,6 +49,23 @@ check("elapsed <1h", nb.format_elapsed(14 * 60) == "14m")
 check("elapsed >1h", nb.format_elapsed(3 * 3600 + 7 * 60) == "3h07")
 check("truncate", nb.truncate("abcdefghij", 5) == "abcd…", nb.truncate("abcdefghij", 5))
 
+check("initials: first letters", nb.initials("Refactor the export path") == "RTE",
+      nb.initials("Refactor the export path"))
+check("initials: counts short words too", nb.initials("Write release notes") == "WRN")
+check("initials: pads from the last word", nb.initials("Fix CSV") == "FCS",
+      nb.initials("Fix CSV"))
+check("initials: pads a lone word", nb.initials("Email") == "EMA", nb.initials("Email"))
+check("initials: ignores punctuation", nb.initials("re-do (the) thing") == "RDT",
+      nb.initials("re-do (the) thing"))
+check("initials: fallback when nothing usable", nb.initials("--- ...") == nb.ID_FALLBACK)
+check("unique_id: free base kept", nb.unique_id("RTE", ["ABC"]) == "RTE")
+check("unique_id: suffixes past collisions", nb.unique_id("RTE", ["RTE", "rte2"]) == "RTE3",
+      nb.unique_id("RTE", ["RTE", "rte2"]))
+check("unique_id: stays within the length cap",
+      len(nb.unique_id("M" * nb.ID_MAX, ["M" * nb.ID_MAX])) == nb.ID_MAX)
+check("clean_id: strips whitespace and clamps",
+      nb.clean_id("  MON 4821  ") == "MON4821" and len(nb.clean_id("x" * 40)) == nb.ID_MAX)
+
 start = datetime(2026, 8, 5, 9, 0)
 nb.append_log("Real task", start, start + timedelta(minutes=42), 42 * 60)
 nb.append_log("Typo", start, start + timedelta(seconds=4), 4)
@@ -78,6 +95,22 @@ check("config: coerces seconds", loaded["tasks"][0]["seconds"] == 12.0)
 check("config: fills run flags",
       loaded["tasks"][0]["running"] is False and loaded["tasks"][0]["auto"] is False)
 check("config: clamps out-of-range active", loaded["active"] == 0, str(loaded["active"]))
+check("config: generates a missing id", loaded["tasks"][0]["id"] == "REA",
+      loaded["tasks"][0]["id"])
+check("config: unset id is not locked", loaded["tasks"][0]["id_locked"] is False)
+
+# ids written by hand may repeat or be missing; both are settled at load so the
+# rest of the code can assume every task has one and no two share it.
+with open(nb.CONFIG_PATH, "w", encoding="utf-8") as fh:
+    json.dump({"tasks": [
+        {"text": "Alpha one", "id": "AAA", "id_locked": True},
+        {"text": "Alpha two", "id": "aaa", "id_locked": True},   # same, bar the case
+        {"text": "Ship the thing"},                              # legacy, no id
+        {"text": "Ship the thumb"},                              # would collide -> STT2
+    ]}, fh)
+ids = [t["id"] for t in nb.load_config()["tasks"]]
+check("config: de-duplicates ids", ids == ["AAA", "aaa2", "STT", "STT2"], str(ids))
+check("config: keeps id_locked", nb.load_config()["tasks"][0]["id_locked"] is True)
 
 with open(nb.CONFIG_PATH, "w", encoding="utf-8") as fh:
     fh.write("{ this is not json")
@@ -578,6 +611,165 @@ for i, _ in enumerate(bar.tasks):
     if row_of(i) is not None:
         agrees(i, f"mixed row {i}")
 bar.stop_all(); bar.root.update()
+
+# --- task ids ---------------------------------------------------------------
+for t in list(bar.tasks):
+    bar.store.stop(t)
+bar.store.tasks.clear(); bar.store.active = -1
+bar.create_task("Refactor the export path")
+bar.create_task("Write release notes")
+bar.create_task("Refactor the export pipeline")     # same initials as the first
+bar.root.update()
+check("id: generated from the name", bar.tasks[0]["id"] == "RTE", bar.tasks[0]["id"])
+check("id: collision gets a suffix", bar.tasks[2]["id"] == "RTE2", bar.tasks[2]["id"])
+check("id: generated ones are not locked",
+      [t["id_locked"] for t in bar.tasks] == [False] * 3)
+
+# a generated id is a view of the name, so it follows a rename
+bar.rename_task(1, "Cut a release")
+bar.root.update()
+check("id: follows a rename while automatic", bar.tasks[1]["id"] == "CAR",
+      bar.tasks[1]["id"])
+
+bar.set_task_id(1, " mon 4821 ")
+bar.root.update()
+check("id: hand-typed one is cleaned", bar.tasks[1]["id"] == "mon4821", bar.tasks[1]["id"])
+check("id: typing locks it", bar.tasks[1]["id_locked"] is True)
+bar.rename_task(1, "Cut the release instead")
+bar.root.update()
+check("id: a locked one survives a rename", bar.tasks[1]["id"] == "mon4821",
+      bar.tasks[1]["id"])
+bar.set_task_id(1, "RTE")           # task 0 holds RTE, task 2 already holds RTE2
+check("id: typed collisions are suffixed too", bar.tasks[1]["id"] == "RTE3",
+      bar.tasks[1]["id"])
+bar.set_task_id(1, "")
+bar.root.update()
+check("id: blank hands it back to the generator", bar.tasks[1]["id"] == "CTR",
+      bar.tasks[1]["id"])
+check("id: blank unlocks it", bar.tasks[1]["id_locked"] is False)
+check("id: setting one keeps the others",
+      [t["id"] for t in bar.tasks] == ["RTE", "CTR", "RTE2"],
+      str([t["id"] for t in bar.tasks]))
+
+# the strip shows it, padded to the widest id on screen
+bar.set_task_id(0, "MON-1")
+bar.set_running(2, True)
+bar.set_active(0)
+bar.root.update()
+check("id: on the strip", row_of(0).id_label.cget("text").strip() == "MON-1",
+      row_of(0).id_label.cget("text"))
+check("id: column padded to the widest showing", bar.id_slot() == 5, str(bar.id_slot()))
+check("id: shorter ids padded to match",
+      row_of(2).id_label.cget("text") == "RTE2 ", repr(row_of(2).id_label.cget("text")))
+bar.set_task_id(0, "")
+bar.root.update()
+
+# ids must survive a save/load round trip, runtime keys must not sneak in
+bar._persist()
+saved = json.load(open(nb.CONFIG_PATH, encoding="utf-8"))
+check("id: persisted", saved["tasks"][0]["id"] == "RTE", str(saved["tasks"][0]))
+check("id: id_locked persisted", "id_locked" in saved["tasks"][0])
+check("id: reload keeps ids", [t["id"] for t in nb.load_config()["tasks"]]
+      == [t["id"] for t in bar.tasks])
+
+for _t in list(bar.tasks):
+    bar.store.stop(_t)
+bar.root.update()
+
+# --- editing an id in the list ---------------------------------------------
+bar.panel.open(); bar.root.update()
+bar.panel.begin_edit_id(0)
+bar.root.update()
+check("id edit: an entry replaces the label",
+      isinstance(getattr(bar.panel, "id_entry", None), tk.Entry))
+check("id edit: prefilled with the current id",
+      bar.panel.id_var.get() == bar.tasks[0]["id"], bar.panel.id_var.get())
+check("id edit: counts as typing", bar.panel.typing)
+bar.panel.id_var.set("MON-99")
+bar.panel._commit_id()
+bar.root.update()
+check("id edit: commits", bar.tasks[0]["id"] == "MON-99", bar.tasks[0]["id"])
+check("id edit: leaves edit mode", bar.panel.editing_id == -1 and not bar.panel.typing)
+check("id edit: the row shows it",
+      bar.panel.rows[0].parts[1].cget("text").strip() == "MON-99",
+      bar.panel.rows[0].parts[1].cget("text"))
+was = bar.tasks[0]["id"]
+bar.panel.begin_edit_id(0)
+bar.panel.id_var.set("scrapped")
+bar.panel.cancel_id()
+bar.root.update()
+check("id edit: Escape discards", bar.tasks[0]["id"] == was, bar.tasks[0]["id"])
+check("id edit: a second commit is inert", bar.panel._commit_id() is None
+      and bar.tasks[0]["id"] == was)
+
+# while a text field is open the list's single-key shortcuts must stand down
+n_before = len(bar.tasks)
+bar.panel.begin_edit_id(0)
+bar.panel._delete_cursor()
+bar.panel._toggle_cursor()
+bar.panel._move_cursor(1)
+check("typing: Delete does not remove a task", len(bar.tasks) == n_before)
+check("typing: Space does not toggle a clock", not bar.tasks[0]["running"])
+check("typing: Up/Down do not move the cursor", bar.panel.cursor == 0)
+bar.panel.cancel_id()
+
+bar.panel.begin_add()
+bar.root.update()
+bar.panel._delete_cursor()
+check("typing: Delete is inert in the add field too", len(bar.tasks) == n_before)
+
+# Sealing a key runs on the widget tag, ahead of the Entry CLASS tag that types
+# the character - so anything that edits text must NOT be sealed. Drive these as
+# real keystrokes; calling the handlers cannot catch a swallowed keypress.
+bar.panel.add_var.set("")
+bar.panel.add_entry.focus_set()
+for keysym in ("a", "space", "b"):
+    bar.panel.add_entry.event_generate(f"<{keysym}>")
+bar.root.update()
+check("keys: space types a space in the add field",
+      bar.panel.add_var.get() == "a b", repr(bar.panel.add_var.get()))
+check("keys: space did not toggle a clock", not bar.tasks[bar.panel.cursor]["running"])
+bar.panel.add_entry.icursor(1)
+bar.panel.add_entry.event_generate("<Delete>")
+bar.root.update()
+check("keys: Delete edits text in the add field",
+      bar.panel.add_var.get() == "ab", repr(bar.panel.add_var.get()))
+check("keys: Delete removed no task", len(bar.tasks) == n_before)
+bar.panel.cancel_add()
+
+# the same for the id field, plus Enter there must not fall through and activate
+bar.panel.begin_edit_id(0)
+bar.root.update()
+bar.panel.id_var.set("")
+bar.panel.id_entry.focus_set()
+for keysym in ("X", "space", "Y"):
+    bar.panel.id_entry.event_generate(f"<{keysym}>")
+bar.root.update()
+check("keys: space types in the id field", bar.panel.id_var.get() == "X Y",
+      repr(bar.panel.id_var.get()))
+was_active = bar.active
+bar.panel.id_entry.event_generate("<Return>")
+bar.root.update()
+check("keys: Enter commits the id", bar.tasks[0]["id"] == "XY", bar.tasks[0]["id"])
+check("keys: Enter does not close the list", bar.panel.is_open)
+check("keys: Enter does not switch task", bar.active == was_active, str(bar.active))
+bar.set_task_id(0, "")
+
+# Enter inside the add field must not also reach the window's "activate row"
+# binding, which would close the list and switch tasks.
+bar.panel.begin_add()          # every refresh above rebuilt add_entry; re-enter
+bar.root.update()
+bar.panel.add_var.set("Added by keystroke")
+bar.panel.add_entry.event_generate("<Return>")
+bar.root.update()
+check("typing: Enter adds", bar.tasks[-1]["text"] == "Added by keystroke",
+      bar.tasks[-1]["text"])
+check("typing: Enter does not close the list", bar.panel.is_open)
+check("typing: Enter stays in add mode", bar.panel.adding)
+bar.panel.cancel_add()
+bar.remove_task(len(bar.tasks) - 1)
+bar.panel.close()
+bar.root.update()
 
 # --- the footer link -------------------------------------------------------
 import focusbar                                   # noqa: E402

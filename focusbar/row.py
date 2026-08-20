@@ -9,12 +9,12 @@ from __future__ import annotations
 import tkinter as tk
 
 from .theme import (ACCENT, AMBER, BG, BORDER, DIM, FG, HOVER_BG, ICON_SIZE,
-                    NUDGE, RAIL_WIDTH, STACK_TEXT)
+                    ID_FG, ID_FONT, NUDGE, RAIL_WIDTH, STACK_TEXT)
 from .tooltip import Tooltip
 
 
 class BarRow:
-    """`[rail] [state dot / play button] task text .... timer [chevron]`"""
+    """`[rail] [state dot / play button] id  task text .... timer [chevron]`"""
 
     CHEVRON_SLOT = 5      # in characters; identical on every row so timers align
 
@@ -59,6 +59,12 @@ class BarRow:
                               font=("Segoe UI", 9 if self.running else 8))
         self.timer.pack(side="right", padx=(6, 2))
 
+        # The id sits between the control and the name, padded to the widest one
+        # on the strip so the names start on a common left edge.
+        self.id_label = tk.Label(self.frame, text=bar.id_text(index), bg=BG,
+                                 fg=ID_FG, font=ID_FONT)
+        self.id_label.pack(side="left", padx=(0, 5))
+
         self.label = tk.Label(self.frame, text=task["text"], bg=BG,
                               fg=FG if index == bar.active else STACK_TEXT,
                               font=bar.task_font, anchor="w")
@@ -73,14 +79,14 @@ class BarRow:
     def _bind(self) -> None:
         bar, index = self.bar, self.index
         for widget in (self.frame, self.label, self.timer, self.button,
-                       self.chevron, self.rail):
+                       self.chevron, self.rail, self.id_label):
             widget.bind("<ButtonPress-1>", bar._on_press)
             widget.bind("<B1-Motion>", bar._on_drag)
             widget.bind("<Button-3>", bar._show_menu)
             widget.bind("<MouseWheel>", bar._on_wheel)
         # Everything hangs off release so a drag from any part moves the window.
         self.button.bind("<ButtonRelease-1>", lambda _e: bar._on_release_button(index))
-        for widget in (self.frame, self.label, self.timer, self.rail):
+        for widget in (self.frame, self.label, self.timer, self.rail, self.id_label):
             widget.bind("<ButtonRelease-1>", lambda _e: bar._on_release_text(index))
         self.button.bind("<Enter>", lambda _e: self.hover(True))
         self.button.bind("<Leave>", lambda _e: self.hover(False))

@@ -18,9 +18,9 @@ from .store import TaskStore, load_config, save_config
 from .system import open_log, startup_enabled, toggle_startup
 from .theme import (ACCENT, AMBER, BAR_HEIGHT, BG, BORDER, BREATH_MS, DOT_FONT,
                     DOT_IDLE, DOT_RUNNING, FG, ICON_FONTS, ICON_LINK, ICON_PAUSE,
-                    ICON_PLAY, ICON_SIZE, IDLE_DIM, MAX_WIDTH, MIN_WIDTH, NUDGE,
-                    PLACEHOLDER, ROW_HEIGHT, TEXT_LINK, TEXT_PAUSE, TEXT_PLAY,
-                    breath_ramp)
+                    ICON_PLAY, ICON_SIZE, ID_FONT, IDLE_DIM, MAX_WIDTH, MIN_WIDTH,
+                    NUDGE, PLACEHOLDER, ROW_HEIGHT, TEXT_LINK, TEXT_PAUSE,
+                    TEXT_PLAY, breath_ramp)
 from .util import format_elapsed, truncate
 from .version import resolve as app_version
 from .winapi import (MOD_ALT, MOD_CONTROL, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
@@ -127,6 +127,10 @@ class FocusBar:
         self.store.rename(index, text)
         self._changed()
 
+    def set_task_id(self, index: int, task_id: str) -> None:
+        self.store.set_id(index, task_id)
+        self._changed()
+
     def set_active(self, index: int) -> None:
         self.store.set_active(index)
         self.last_nudge = time.monotonic()
@@ -172,6 +176,7 @@ class FocusBar:
 
         self.task_font = tkfont.Font(family="Segoe UI", size=10)
         self.counter_font = tkfont.Font(family="Segoe UI", size=8)
+        self.id_font = tkfont.Font(family=ID_FONT[0], size=ID_FONT[1])
 
         self.rows: list[tk.Frame] = []
         self.entry_var = tk.StringVar()
@@ -274,6 +279,19 @@ class FocusBar:
     def counter_text(self) -> str:
         return f"{len(self.tasks)} ▾" if self.tasks else ""
 
+    def id_slot(self) -> int:
+        """Width of the id column, in characters: the widest id on the strip.
+
+        Measured over what is showing rather than over every task, so one long
+        hand-typed id on a paused task cannot indent the whole strip.
+        """
+        return max((len(self.tasks[i]["id"]) for i in self.visible_tasks()), default=0)
+
+    def id_text(self, index: int) -> str:
+        if not (0 <= index < len(self.tasks)):
+            return ""
+        return self.tasks[index]["id"].ljust(self.id_slot())
+
     def _bar_height(self) -> int:
         rows = len(self.visible_tasks())
         return BAR_HEIGHT if rows <= 1 else ROW_HEIGHT * rows
@@ -284,6 +302,7 @@ class FocusBar:
         widest = max(self.task_font.measure(t) for t in texts)
         timers = [self.timer_text(self.tasks[i]) for i in visible] or [""]
         widest += max(self.counter_font.measure(t) for t in timers)
+        widest += self.id_font.measure("0" * self.id_slot()) + 5
         widest += self.counter_font.measure(self.counter_text()) + 108
         width = max(MIN_WIDTH, min(MAX_WIDTH, widest))
         height = self._bar_height()

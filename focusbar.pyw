@@ -3,6 +3,8 @@
 A thin, translucent, always-on-top strip showing what you're currently doing.
 One row per running task; paused tasks live in the drop-down list.
 
+Each task carries a short id, generated from its name and editable in the list.
+
 Hotkeys (work anywhere in Windows):
     Ctrl+Alt+T   rename the focused task
     Ctrl+Alt+A   add a task to the list

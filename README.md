@@ -6,11 +6,11 @@ doing right now — so when you drift, a glance at the top of the screen pulls y
 **Every running task gets its own row.** Paused ones are hidden.
 
 ```
-┌────────────────────────────────────────────────────┐
-│ ●  Fixing the OIDC token refresh        25m   4 ▾  │
-│ ●  Nightly build on CI                  40m        │
-│ ●  Review PR 412 - customer import       5m        │
-└────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│ ●  FOT       Fixing the OIDC token refresh      25m   4 ▾    │
+│ ●  MON-4821  Nightly build on CI                40m          │
+│ ●  RP4       Review PR 412 - customer import     5m          │
+└──────────────────────────────────────────────────────────────┘
     ↑ breathing blue dot = running; hover it to get ❚❚
    ┌──────────────────────────────────────────┐
    │ ● Fixing the OIDC token refresh    ✕ 25m │  ← running  (blue, row washed)
@@ -96,6 +96,7 @@ is never live.
 | In the list | Result |
 | --- | --- |
 | `↑` `↓` | Move the selection |
+| Click the id | Type your own (`Enter` saves, `Esc` cancels, empty restores the automatic one) |
 | `Enter` or click the text | Switch to that task |
 | `Space` or click the dot | Start / stop **just that** timer — runs alongside the rest |
 | `Delete` or click `✕` | Remove that task |
@@ -107,6 +108,37 @@ The footer's bottom-right corner carries a small link icon that opens `GITHUB_UR
 
 `Ctrl+Alt+N` / `Ctrl+Alt+B` cycle through tasks without opening the list at all —
 that's the fastest way to bounce between two things.
+
+## Task ids
+
+Every task carries a short id, shown on the strip and in the list just left of its name.
+It's generated from the name — the first letters of its first words:
+
+| Task | Id |
+| --- | --- |
+| Refactor the export path | `RTE` |
+| Write release notes | `WRN` |
+| Fix CSV | `FCS` (padded from the last word so codes stay a uniform width) |
+| Review PR 412 | `RP4` |
+
+Two tasks that would collide get a digit: the second `RTE` becomes `RTE2`.
+
+**Click the id in the list to type your own** — a ticket key like `MON-4821`, or anything up
+to 12 characters. Whitespace is stripped; if the id you type is already in use it gets a digit
+the same way.
+
+The difference between the two matters in one place:
+
+- **A generated id follows the name.** Rename the task and the id is regenerated, because
+  it's just a short view of the name.
+- **An id you typed is yours and stays put** through any number of renames — it's a reference
+  you may have written down somewhere else.
+
+Clearing the field hands the id back to the generator.
+
+Ids are padded so the task names line up in a column. On the strip that padding is measured
+across the rows actually showing, so one long id on a paused task can't indent everything.
+
 
 ## Several timers at once
 

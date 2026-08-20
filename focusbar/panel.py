@@ -10,10 +10,11 @@ import tkinter as tk
 
 from . import GITHUB_URL
 from .system import open_url
-from .theme import (ACCENT, BORDER, DIM, FG, FLASH_BG, HOVER_BG, IDLE_DIM, IDLE_FG,
-                    NUDGE, PANEL_BG, RAIL_WIDTH, ROW_TEXT, RUNNING_BG)
+from .theme import (ACCENT, BORDER, DIM, FG, FLASH_BG, HOVER_BG, ID_FG, ID_FONT,
+                    IDLE_DIM, IDLE_FG, NUDGE, PANEL_BG, RAIL_WIDTH, ROW_TEXT,
+                    RUNNING_BG)
 from .tooltip import Tooltip
-from .util import format_elapsed, truncate
+from .util import ID_MAX, format_elapsed, truncate
 from .winapi import (WS_EX_TOOLWINDOW, bring_to_front, root_hwnd, round_corners,
                      set_ex_style)
 
@@ -22,6 +23,7 @@ class TaskListPanel:
     ROW_FONT = ("Segoe UI", 9)
     FLASH_MS = 650
     ALPHA_BOOST = 0.18          # the list sits slightly more solid than the strip
+    TEXT_LIMIT = 44             # the rank and id columns take the rest
 
     def __init__(self, bar):
         self.bar = bar
@@ -30,6 +32,8 @@ class TaskListPanel:
         self.rows: list[tk.Frame] = []
         self.adding = False
         self.add_var: tk.StringVar | None = None
+        self.editing_id = -1
+        self.id_var: tk.StringVar | None = None
         self._had_focus = False
 
     @property
@@ -39,6 +43,15 @@ class TaskListPanel:
     @property
     def is_open(self) -> bool:
         return self.window is not None
+
+    @property
+    def typing(self) -> bool:
+        """A text field is open, so the list's single-key shortcuts stand down.
+
+        Without this, Delete inside the add field deletes the selected task
+        instead of a character.
+        """
+        return self.adding or self.editing_id >= 0
 
     # -- window -------------------------------------------------------------
 
@@ -55,8 +68,10 @@ class TaskListPanel:
             return
         self.cursor = max(0, self.store.active)
         self.adding = False
+        self.editing_id = -1
         self._had_focus = False
         self.add_var = tk.StringVar(master=self.bar.root, value="")
+        self.id_var = tk.StringVar(master=self.bar.root, value="")
         self.window = tk.Toplevel(self.bar.root)
         self.window.overrideredirect(True)
         self.window.attributes("-topmost", True)
@@ -90,6 +105,7 @@ class TaskListPanel:
             self.window = None
             self.rows = []
             self.adding = False
+            self.editing_id = -1
 
     def _on_focus_in(self, _event: tk.Event) -> None:
         self._had_focus = True
@@ -159,6 +175,10 @@ class TaskListPanel:
             return HOVER_BG
         return RUNNING_BG if running else PANEL_BG
 
+    def _id_slot(self) -> int:
+        """Width of the id column, in characters: the widest id in the list."""
+        return max((len(t["id"]) for t in self.store.tasks), default=0)
+
     def _build_row(self, index: int, task: dict) -> tk.Frame:
         focused = index == self.store.active
         running = task["running"]
@@ -179,21 +199,25 @@ class TaskListPanel:
         dot = tk.Label(row, text=glyph, bg=bg, fg=dot_fg, font=dot_font,
                        padx=9, pady=5, cursor="hand2")
         dot.pack(side="left")
+        id_widget = self._build_id(row, index, task, bg)
         time_label = tk.Label(row, text=time_text, bg=bg, fg=time_fg,
                               font=("Segoe UI", 8), padx=8)
         time_label.pack(side="right")
         remove = tk.Label(row, text="✕", bg=bg, fg=bg, font=("Segoe UI", 8),
                           padx=8, cursor="hand2")
         remove.pack(side="right")
-        text = tk.Label(row, text=truncate(task["text"], 52), bg=bg, fg=text_fg,
-                        font=self.ROW_FONT, anchor="w")
+        text = tk.Label(row, text=truncate(task["text"], self.TEXT_LIMIT), bg=bg,
+                        fg=text_fg, font=self.ROW_FONT, anchor="w")
         text.pack(side="left", fill="x", expand=True)
         row.configure(bg=bg)
         focus_edge.configure(bg=ACCENT if focused else bg)
 
-        row.parts = (dot, text, time_label, remove)  # type: ignore[attr-defined]
+        # The id may be an Entry mid-edit; it keeps its own colours until it commits.
+        row.parts = tuple(w for w in (dot, id_widget, text, remove, time_label)
+                          if index != self.editing_id or w is not id_widget)
         row.time_label = time_label                  # type: ignore[attr-defined]
         row.dot = dot                                # type: ignore[attr-defined]
+        row.remove = remove                          # type: ignore[attr-defined]
         row.index = index                            # type: ignore[attr-defined]
         row.running = running                        # type: ignore[attr-defined]
 
@@ -215,11 +239,87 @@ class TaskListPanel:
         remove.bind("<Button-1>", lambda _e, i=index: self._delete(i))
         return row
 
+    def _build_id(self, row: tk.Frame, index: int, task: dict, bg: str) -> tk.Widget:
+        """The id cell: a label you can click to type over.
+
+        Editing in place keeps the list on screen and the clocks running, the
+        same reason adding lives inside the panel rather than replacing it.
+        """
+        slot = self._id_slot()
+        if index == self.editing_id:
+            entry = tk.Entry(
+                row, textvariable=self.id_var, bg=HOVER_BG, fg=FG, font=ID_FONT,
+                width=max(slot, 8), relief="flat", insertbackground=ACCENT,
+                highlightthickness=0, borderwidth=0,
+            )
+            entry.pack(side="left", padx=(0, 8))
+            entry.bind("<Return>", self._closing(self._commit_id))
+            entry.bind("<Escape>", self._closing(self.cancel_id))
+            entry.bind("<FocusOut>", lambda _e: self._commit_id())
+            self._seal(entry)
+            entry.focus_set()
+            entry.select_range(0, "end")
+            entry.icursor("end")
+            self.id_entry = entry
+            return entry
+
+        label = tk.Label(row, text=task["id"].ljust(slot), bg=bg, fg=ID_FG,
+                         font=ID_FONT, padx=0, cursor="hand2")
+        label.pack(side="left", padx=(0, 8))
+        label.tip = Tooltip(label)                   # type: ignore[attr-defined]
+        label.bind("<Enter>", lambda _e: (label.configure(fg=FG),
+                                          label.tip.show(self._id_hint(index))))
+        label.bind("<Leave>", lambda _e: (label.configure(fg=ID_FG), label.tip.hide()))
+        label.bind("<Button-1>", lambda _e, i=index: self.begin_edit_id(i))
+        return label
+
+    def _id_hint(self, index: int) -> str:
+        if not (0 <= index < len(self.store.tasks)):
+            return ""
+        if self.store.tasks[index]["id_locked"]:
+            return "Click to change this id  ·  clear it to go back to automatic"
+        return "Click to set your own id  ·  auto ids follow the task name"
+
     def _dot_hint(self, index: int) -> str:
         """Read live state, so the hint can never disagree with the dot."""
         if self.store.is_running(index):
             return "Stop this timer"
         return "Start this timer  ·  runs alongside"
+
+    # Keys the panel claims at window level that an Entry has no use for. The
+    # window's bindings fire for events in its children (its name is in every
+    # descendant's bindtags), so without this, Enter in a text field would also
+    # "activate the selected row" and close the list.
+    SEALED_KEYS = ("<Up>", "<Down>", "<Alt-Up>", "<Alt-Down>")
+
+    def _seal(self, entry: tk.Entry) -> None:
+        """Swallow the panel's navigation keys inside a text field.
+
+        Only keys the Entry itself does nothing with. "break" here runs on the
+        *widget* tag, which comes before the Entry *class* tag, so sealing a key
+        that types or edits text swallows it before Tk inserts the character -
+        which is exactly what it did to <space> and <Delete>.
+
+        Those two stay unsealed and are handled the other way round, by the
+        `typing` guard on `_toggle_cursor` / `_delete_cursor`: the window binding
+        fires and declines to act, and the Entry still gets its keystroke.
+        """
+        for sequence in self.SEALED_KEYS:
+            entry.bind(sequence, lambda _e: "break")
+
+    @staticmethod
+    def _closing(action):
+        """Wrap a handler that finishes an edit so the key stops at the field.
+
+        The "break" has to come from the same handler that does the work, not a
+        second binding added after it: committing tears the entry down, and a
+        destroyed widget never reaches the rest of its own binding script. Enter
+        would then arrive at the window as "activate the selected row".
+        """
+        def handler(_event=None):
+            action()
+            return "break"
+        return handler
 
     def _build_add_area(self) -> None:
         """The add affordance stays inside the list.
@@ -259,9 +359,10 @@ class TaskListPanel:
             relief="flat", insertbackground=ACCENT, highlightthickness=0, borderwidth=0,
         )
         entry.pack(side="left", fill="x", expand=True)
-        entry.bind("<Return>", lambda _e: self._commit_add(start=False))
-        entry.bind("<Control-Return>", lambda _e: self._commit_add(start=True))
-        entry.bind("<Escape>", lambda _e: self.cancel_add())
+        entry.bind("<Return>", self._closing(lambda: self._commit_add(start=False)))
+        entry.bind("<Control-Return>", self._closing(lambda: self._commit_add(start=True)))
+        entry.bind("<Escape>", self._closing(self.cancel_add))
+        self._seal(entry)
         entry.focus_set()
         entry.icursor("end")
         self.add_entry = entry
@@ -295,6 +396,7 @@ class TaskListPanel:
     def begin_add(self) -> None:
         if not self.is_open:
             self.open()
+        self.editing_id = -1
         self.adding = True
         if self.add_var is not None:
             self.add_var.set("")
@@ -324,6 +426,36 @@ class TaskListPanel:
         self.refresh()
         self._flash(index)
 
+    # -- editing an id ------------------------------------------------------
+
+    def begin_edit_id(self, index: int) -> None:
+        if not (0 <= index < len(self.store.tasks)):
+            return
+        self.adding = False
+        self.editing_id = index
+        self.cursor = index
+        if self.id_var is not None:
+            self.id_var.set(self.store.tasks[index]["id"])
+        self.refresh()
+        self.focus_window()
+        if getattr(self, "id_entry", None):
+            self.id_entry.focus_set()
+            self.id_entry.select_range(0, "end")
+
+    def cancel_id(self) -> None:
+        self.editing_id = -1
+        self.refresh()
+
+    def _commit_id(self) -> None:
+        # FocusOut fires again while refresh() tears the entry down, so the
+        # index is cleared before anything can re-enter here.
+        index, self.editing_id = self.editing_id, -1
+        if index < 0:
+            return
+        typed = self.id_var.get() if self.id_var else ""
+        self.bar.set_task_id(index, typed)
+        self.refresh()
+
     # -- live updates -------------------------------------------------------
 
     def breathe(self, colour: str) -> None:
@@ -350,13 +482,12 @@ class TaskListPanel:
             selected = index == self.cursor
             bg = self._row_bg(index, row.running)        # type: ignore[attr-defined]
             row.configure(bg=bg)
-            dot, text, time_label, remove = row.parts    # type: ignore[attr-defined]
-            for widget in (dot, text, time_label, remove):
+            for widget in row.parts:                     # type: ignore[attr-defined]
                 widget.configure(bg=bg)
             # The focused row's accent edge stays put; unfocused edges blend in.
             if row.focus_edge is not None:               # type: ignore[attr-defined]
                 row.focus_edge.configure(bg=bg)          # type: ignore[attr-defined]
-            remove.configure(fg=DIM if selected else bg)
+            row.remove.configure(fg=DIM if selected else bg)   # type: ignore[attr-defined]
 
     def _flash(self, index: int) -> None:
         """Briefly light up a freshly added row so the addition is visible."""
@@ -370,7 +501,7 @@ class TaskListPanel:
     # -- actions ------------------------------------------------------------
 
     def _move_cursor(self, delta: int) -> None:
-        if not self.rows:
+        if not self.rows or self.typing:
             return
         self.cursor = (self.cursor + delta) % len(self.rows)
         self._highlight()
@@ -380,15 +511,15 @@ class TaskListPanel:
         self.refresh()
 
     def _toggle_cursor(self) -> None:
-        if self.rows and not self.adding:
+        if self.rows and not self.typing:
             self._toggle_run(self.cursor)
 
     def _activate_cursor(self) -> None:
-        if self.rows:
+        if self.rows and not self.typing:
             self._activate(self.cursor)
 
     def _delete_cursor(self) -> None:
-        if self.rows:
+        if self.rows and not self.typing:
             self._delete(self.cursor)
 
     def _activate(self, index: int) -> None:
